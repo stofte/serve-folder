@@ -4,7 +4,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser};
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -15,7 +15,7 @@ struct Args {
     #[arg(short, long, default_value_t = 8888, help = "Server port")]
     port: u16,
 
-    #[arg(short, long, default_value = "127.0.0.1", help = "Network interface to bind")]
+    #[arg(short, long, default_value = "localhost", help = "Network interface to bind")]
     bind: String,
 
     /// Optional server base directory
