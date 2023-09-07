@@ -26,13 +26,19 @@ fn main() {
     let args = Args::parse();
 
     match &args.wwwroot {
-        Some(p) => set_current_dir(&p).expect("Failed to set current directory"),
+        Some(p) => if !set_current_dir(&p).is_ok() {
+            println!(
+                "Failed to set \"{}\" as base directory. Using \"{}\" instead.", 
+                p.to_string_lossy(),
+                current_dir().unwrap().to_string_lossy()
+            );
+        },
         None => ()
     };
 
     let base_dir = current_dir().expect("Failed to get current dir");
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
-    println!("Serving \"{}\" @ {}", base_dir.to_string_lossy(), bind_addr);
+    println!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr);
 
     let listener = TcpListener::bind(bind_addr).unwrap();
     for stream in listener.incoming() {
