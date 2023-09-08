@@ -32,8 +32,6 @@ enum LogCategory {
 fn main() {
     let args = Args::parse();
 
-    let base_dir = current_dir().expect("Failed to get current dir");
-
     match &args.wwwroot {
         Some(p) => if !set_current_dir(&p).is_ok() {
             log(LogCategory::Warning, &format!(
@@ -44,7 +42,8 @@ fn main() {
         },
         None => ()
     };
-    
+
+    let base_dir = current_dir().expect("Failed to get current dir");
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr));
 
