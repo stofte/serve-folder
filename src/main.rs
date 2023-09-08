@@ -14,7 +14,7 @@ const HTTP_VER: &str = " HTTP/1.1";
 #[derive(Parser, Debug)]
 #[command(about="Basic utility for serving up a directory via HTTP", author, version = None, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value_t = 8888, help = "Server port")]
+    #[arg(short, long, default_value_t = 8080, help = "Server port")]
     port: u16,
 
     #[arg(short, long, default_value = "localhost", help = "Network interface to bind")]
@@ -97,8 +97,11 @@ fn handle_connection(mut stream: TcpStream) {
                         ].join("\n");
                         if writer.write_all(lines.as_bytes()).is_ok() {
                             // All headers written, try to write file
-                            std::io::copy(&mut br, &mut writer).expect("Failed to write to response");
-                            response_status = format!("{} ({} bytes)", &norm_path, file_size);
+                            if std::io::copy(&mut br, &mut writer).is_ok() {
+                                response_status = format!("{} ({} bytes)", &norm_path, file_size);
+                            } else {
+                                log(LogCategory::Warning, &format!("Failed to write to file after headers"));
+                            }
                         } else {
                             log(LogCategory::Info, &format!("Failed to write to response"));
                         }
@@ -141,12 +144,15 @@ fn translate_path(line: &str) -> Option<PathBuf> {
 }
 
 fn log(category: LogCategory, text: &str) {
+    use chrono::prelude::*;
+
     let cat = match category {
         LogCategory::Info => "[INF]".white(),
         LogCategory::Warning => "[WRN]".yellow(),
         LogCategory::Error => "[ERR]".red()
     };
-    println!("{} {}", cat, text);
+    let local: DateTime<Local> = Local::now();
+    println!("{} {} {}", local.format("%T%.3f"), cat, text);
 }
 
 #[cfg(test)]
