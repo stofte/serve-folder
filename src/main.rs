@@ -20,7 +20,7 @@ struct Args {
     #[arg(short, long, default_value = "localhost", help = "Network interface to bind")]
     bind: String,
 
-    /// Optional server base directory
+    /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<std::path::PathBuf>,
 }
 
