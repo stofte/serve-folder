@@ -82,13 +82,29 @@ fn handle_connection(mut stream: TcpStream) {
             };
             match file_ok {
                 true => {
-                    let f = std::fs::File::open(&path).expect("Unable to open file");
-                    let mut br = BufReader::new(f);
-                    writer.write_all("HTTP/1.1 200 OK\n".as_bytes()).expect("Could not write");
-                    writer.write_all("Cache-Control: no-store\n".as_bytes()).expect("Could not write");
-                    writer.write_all(format!("Content-Length: {}\n\n", file_size).as_bytes()).expect("Could not write");
-                    std::io::copy(&mut br, &mut writer).expect("Failed to write to response");
-                    response_status = format!("{} ({} bytes)", path.to_string_lossy(), file_size);
+                    let f_wrapped = std::fs::File::open(&path);
+                    if f_wrapped.is_ok() {
+                        // File could be opened
+                        let f = f_wrapped.unwrap();
+                        let mut br = BufReader::new(f);
+                        let lines = [
+                            "HTTP/1.1 200 OK",
+                            "Cache-Control: no-store",
+                            &format!("Content-Length: {}\n\n", file_size)
+                        ].join("\n");
+                        if writer.write_all(lines.as_bytes()).is_ok() {
+                            // All headers written, try to write file
+                            std::io::copy(&mut br, &mut writer).expect("Failed to write to response");
+                            response_status = format!("{} ({} bytes)", &norm_path, file_size);
+                        } else {
+                            log(LogCategory::Info, &format!("Failed to write to response"));
+                        }
+                        writer.write_all(lines.as_bytes()).expect("Could not write");
+                    } else {
+                        if !writer.write_all("HTTP/1.1 500 Internal Server Error\n".as_bytes()).is_ok() {
+                            log(LogCategory::Info, &format!("Failed to write to response"));
+                        }
+                    }
                 },
                 false => {
                     writer.write_all("HTTP/1.1 404 Not Found\n".as_bytes()).expect("Could not write");
