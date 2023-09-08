@@ -6,6 +6,7 @@ use std::{
 };
 use clap::{Parser};
 use colored::*;
+use dunce::canonicalize;
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -60,11 +61,13 @@ fn handle_connection(mut stream: TcpStream) {
         if let Some(path) = translate_path(&line) {
             let mut writer = BufWriter::new(&stream);
             let mut file_size = 0;
+            let mut norm_path = path.to_string_lossy();
             let mut response_status: String = String::from("");
             let file_ok = match std::fs::metadata(&path) {
                 Ok(metadata) => {
                     if metadata.is_file() {
                         file_size = metadata.len();
+                        norm_path = String::from(canonicalize(&path).expect("Failed to canonicalize path").to_string_lossy()).into();
                         true
                     } else {
                         log(LogCategory::Info, &format!(
