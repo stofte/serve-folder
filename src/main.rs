@@ -5,6 +5,7 @@ use std::{
     path::PathBuf
 };
 use clap::{Parser};
+use colored::*;
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -22,23 +23,30 @@ struct Args {
     wwwroot: Option<std::path::PathBuf>,
 }
 
+enum LogCategory {
+    Info,
+    Warning,
+    Error,
+}
+
 fn main() {
     let args = Args::parse();
 
+    let base_dir = current_dir().expect("Failed to get current dir");
+
     match &args.wwwroot {
         Some(p) => if !set_current_dir(&p).is_ok() {
-            println!(
+            log(LogCategory::Warning, &format!(
                 "Failed to set \"{}\" as base directory. Using \"{}\" instead.", 
                 p.to_string_lossy(),
                 current_dir().unwrap().to_string_lossy()
-            );
+            ));
         },
         None => ()
     };
-
-    let base_dir = current_dir().expect("Failed to get current dir");
+    
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
-    println!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr);
+    log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr));
 
     let listener = TcpListener::bind(bind_addr).unwrap();
     for stream in listener.incoming() {
@@ -51,20 +59,25 @@ fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         if let Some(path) = translate_path(&line) {
-            println!("{}", line);
             let mut writer = BufWriter::new(&stream);
             let mut file_size = 0;
+            let mut response_status: String = String::from("");
             let file_ok = match std::fs::metadata(&path) {
                 Ok(metadata) => {
-                    let mut file_found = false;
                     if metadata.is_file() {
                         file_size = metadata.len();
-                        file_found = true;
+                        true
+                    } else {
+                        log(LogCategory::Info, &format!(
+                            "Path is not a file. is_dir={}, is_symlink={}",
+                            metadata.is_dir(),
+                            metadata.is_symlink()
+                        ));
+                        false
                     }
-                    file_found
                 },
-                Err(_) => {
-                    writer.write_all("HTTP/1.1 404 OK\n".as_bytes()).expect("Could not write");
+                Err(err) => {
+                    log(LogCategory::Info, &format!("Failed to read metadata: {}", err));
                     false
                 }
             };
@@ -76,11 +89,14 @@ fn handle_connection(mut stream: TcpStream) {
                     writer.write_all("Cache-Control: no-store\n".as_bytes()).expect("Could not write");
                     writer.write_all(format!("Content-Length: {}\n\n", file_size).as_bytes()).expect("Could not write");
                     std::io::copy(&mut br, &mut writer).expect("Failed to write to response");
+                    response_status = format!("{} ({} bytes)", path.to_string_lossy(), file_size);
                 },
                 false => {
-                    writer.write_all("HTTP/1.1 404 OK\n".as_bytes()).expect("Could not write");
+                    writer.write_all("HTTP/1.1 404 Not Found\n".as_bytes()).expect("Could not write");
+                    response_status = String::from("404 Not Found");
                 }
             }
+            log(LogCategory::Info, &format!("Request {} => {}", &line[0..(line.len() - HTTP_VER.len())], response_status));
         }
     }
 }
@@ -104,6 +120,15 @@ fn translate_path(line: &str) -> Option<PathBuf> {
         return Some(p);
     }
     None
+}
+
+fn log(category: LogCategory, text: &str) {
+    let cat = match category {
+        LogCategory::Info => "[INF]".white(),
+        LogCategory::Warning => "[WRN]".yellow(),
+        LogCategory::Error => "[ERR]".red()
+    };
+    println!("{} {}", cat, text);
 }
 
 #[cfg(test)]

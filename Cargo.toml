@@ -9,3 +9,4 @@ edition = "2021"
 [dependencies]
 url = "2.4.1"
 clap = { version = "4.4.2", features = ["derive"] }
+colored = "2.0.4"
