@@ -130,15 +130,16 @@ fn translate_path(line: &str) -> Option<PathBuf> {
 
         // Format into a URL, so we can use parsing from std lib
         let dummyurl = String::from("http://localhost") + &path;
-        let url = url::Url::parse(&dummyurl).expect("could not parse out url");
         let cur_dir = current_dir().expect("no path?");
 
-        // Format into a file path using the current directory and url's path
-        let p = std::path::Path::new(&cur_dir)
-            .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
-            .join(".".to_owned() + &url.path().replace("/", "\\"));
-
-        return Some(p);
+        return match url::Url::parse(&dummyurl) {
+            Ok(url) => {
+                Some(std::path::Path::new(&cur_dir)
+                    .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
+                    .join(".".to_owned() + &url.path().replace("/", "\\")))
+            },
+            Err(_) => None
+        }
     }
     None
 }
