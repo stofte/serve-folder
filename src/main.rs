@@ -2,11 +2,15 @@ use std::{
     env::{current_dir, set_current_dir},
     io::{prelude::*, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
-    path::PathBuf
+    path::PathBuf,
+    fs::File,
+    sync::Arc,
+    thread
 };
 use clap::{Parser};
 use colored::*;
 use dunce::canonicalize;
+use native_tls::{Identity, TlsAcceptor, TlsStream};
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -33,6 +37,11 @@ enum LogCategory {
 fn main() {
     let args = Args::parse();
 
+    let mut file = File::open("certs\\mypfx1.pfx").unwrap();
+    let mut identity = vec![];
+    file.read_to_end(&mut identity).unwrap();
+    let identity = Identity::from_pkcs12(&identity, "foobar").unwrap();
+
     match &args.wwwroot {
         Some(p) => if !set_current_dir(&p).is_ok() {
             log(LogCategory::Warning, &format!(
@@ -48,18 +57,30 @@ fn main() {
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr));
 
+
+    let acceptor = TlsAcceptor::new(identity).unwrap();
+    let acceptor = Arc::new(acceptor);
     let listener = TcpListener::bind(bind_addr).unwrap();
+
     for stream in listener.incoming() {
-        let stream = stream.unwrap();
-        handle_connection(stream);
+        match stream {
+            Ok(stream) => {
+                let acceptor = acceptor.clone();
+                thread::spawn(move || {
+                    let stream = acceptor.accept(stream).unwrap();
+                    handle_connection(stream);
+                });
+            }
+            Err(_) => { /* connection failed */ }
+        }
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TlsStream<TcpStream>) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         if let Some(path) = translate_path(&line) {
-            let mut writer = BufWriter::new(&stream);
+            let mut writer = BufWriter::new(stream);
             let mut file_size = 0;
             let mut norm_path = path.to_string_lossy();
             let mut response_status: String = String::from("");
