@@ -44,6 +44,15 @@ enum LogCategory {
 fn main() {
     let args = Args::parse();
 
+    let is_pfx_file = match args.tls_certificate {
+        Some(path) => match std::fs::metadata(&path) {
+            Ok(_) => true,
+            Err(_) => false
+        },
+        None => false
+    };
+
+
     let mut file = File::open("certs\\mypfx1.pfx").unwrap();
     let mut identity = vec![];
     file.read_to_end(&mut identity).unwrap();
@@ -64,7 +73,6 @@ fn main() {
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr));
 
-
     let acceptor = TlsAcceptor::new(identity).unwrap();
     let acceptor = Arc::new(acceptor);
     let listener = TcpListener::bind(bind_addr).unwrap();
@@ -72,18 +80,22 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let acceptor = acceptor.clone();
-                thread::spawn(move || {
-                    let stream = acceptor.accept(stream).unwrap();
+                if true {
                     handle_connection(stream);
-                });
+                } else {
+                    let acceptor = acceptor.clone();
+                    thread::spawn(move || {
+                        let mut stream = acceptor.accept(stream).unwrap();
+                        handle_connection(stream);
+                    });
+                }
             }
             Err(_) => { /* connection failed */ }
         }
     }
 }
 
-fn handle_connection(mut stream: TlsStream<TcpStream>) {
+fn handle_connection(mut stream: impl Read + Write + Unpin) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         if let Some(path) = translate_path(&line) {
