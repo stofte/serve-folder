@@ -18,11 +18,18 @@ const HTTP_VER: &str = " HTTP/1.1";
 #[derive(Parser, Debug)]
 #[command(about="Basic utility for serving up a directory via HTTP", author, version = None, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value_t = 8080, help = "Server port")]
+    /// Server port
+    #[arg(short, long, default_value_t = 8080)]
     port: u16,
 
-    #[arg(short, long, default_value = "localhost", help = "Network interface to bind")]
+    /// Network interface to bind
+    #[arg(short, long, default_value = "localhost")]
     bind: String,
+
+    /// TLS certificate. Can be either a file path to a PFX file, 
+    /// or a path to a locally installed certificate.
+    #[arg(short, long)]
+    tls_certificate: Option<String>,
 
     /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<std::path::PathBuf>,
