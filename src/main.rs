@@ -1,16 +1,15 @@
 use std::{
     env::{current_dir, set_current_dir},
     io::{prelude::*, BufReader, BufWriter},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener},
     path::PathBuf,
     fs::File,
-    sync::Arc,
-    thread
+    sync::Arc
 };
 use clap::{Parser};
 use colored::*;
 use dunce::canonicalize;
-use native_tls::{Identity, TlsAcceptor, TlsStream};
+use native_tls::{Identity, TlsAcceptor};
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -19,17 +18,20 @@ const HTTP_VER: &str = " HTTP/1.1";
 #[command(about="Basic utility for serving up a directory via HTTP", author, version = None, long_about = None)]
 struct Args {
     /// Server port
-    #[arg(short, long, default_value_t = 8080)]
+    #[arg(short('p'), long, default_value_t = 8080)]
     port: u16,
 
     /// Network interface to bind
-    #[arg(short, long, default_value = "localhost")]
+    #[arg(short('b'), long, default_value = "localhost")]
     bind: String,
 
-    /// TLS certificate. Can be either a file path to a PFX file, 
-    /// or a path to a locally installed certificate.
-    #[arg(short, long)]
-    tls_certificate: Option<String>,
+    /// Filepath for TLS certificate
+    #[arg(short('f'), long)]
+    certificate_filename: Option<String>,
+
+    /// Optional password for the above TLS certificate
+    #[arg(short('w'), long)]
+    certificate_password: Option<String>,
 
     /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<std::path::PathBuf>,
@@ -44,20 +46,32 @@ enum LogCategory {
 fn main() {
     let args = Args::parse();
 
-    let is_pfx_file = match args.tls_certificate {
+    let is_pfx_file = match &args.certificate_filename {
         Some(path) => match std::fs::metadata(&path) {
-            Ok(_) => true,
+            Ok(metadata) => metadata.is_file(),
             Err(_) => false
         },
         None => false
     };
 
+    let mut tls_acceptor: Option<Arc<TlsAcceptor>> = None;
+    if is_pfx_file {
+        let mut file = File::open(args.certificate_filename.unwrap()).unwrap();
+        let mut identity = vec![];
+        file.read_to_end(&mut identity).unwrap();
+        // Certs without passwords are usually empty string.
+        let cert_pw = args.certificate_password.unwrap_or(String::from(""));
+        match Identity::from_pkcs12(&identity, &cert_pw) {
+            Ok(identity) => {
+                let acceptor = TlsAcceptor::new(identity).unwrap();
+                let acceptor = Arc::new(acceptor);
+                tls_acceptor = Some(acceptor);
+            },
+            Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
+        };
+    }
 
-    let mut file = File::open("certs\\mypfx1.pfx").unwrap();
-    let mut identity = vec![];
-    file.read_to_end(&mut identity).unwrap();
-    let identity = Identity::from_pkcs12(&identity, "foobar").unwrap();
-
+    // Parse and set current directory
     match &args.wwwroot {
         Some(p) => if !set_current_dir(&p).is_ok() {
             log(LogCategory::Warning, &format!(
@@ -71,23 +85,21 @@ fn main() {
 
     let base_dir = current_dir().expect("Failed to get current dir");
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
-    log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), "http://", bind_addr));
+    let protocol = match tls_acceptor { Some(_) => "https://", None => "http://" };
+    log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), protocol, bind_addr));
 
-    let acceptor = TlsAcceptor::new(identity).unwrap();
-    let acceptor = Arc::new(acceptor);
     let listener = TcpListener::bind(bind_addr).unwrap();
-
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if true {
-                    handle_connection(stream);
-                } else {
-                    let acceptor = acceptor.clone();
-                    thread::spawn(move || {
-                        let mut stream = acceptor.accept(stream).unwrap();
+                match &tls_acceptor {
+                    Some(acceptor) => {
+                        let stream = acceptor.accept(stream).unwrap();
                         handle_connection(stream);
-                    });
+                    },
+                    None => {
+                        handle_connection(stream);
+                    }
                 }
             }
             Err(_) => { /* connection failed */ }
