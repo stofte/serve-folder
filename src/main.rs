@@ -1,14 +1,10 @@
-use std::{
-    env::{current_dir, set_current_dir},
-    io::{prelude::*, BufReader, BufWriter},
-    net::{TcpListener},
-    path::PathBuf,
-    fs::File,
-    sync::Arc
-};
-use clap::{Parser};
-use colored::*;
-use dunce::canonicalize;
+use std::io::{BufReader, BufWriter, Read, Write, BufRead};
+use std::env::{current_dir, set_current_dir};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::fs::File;
+use std::sync::Arc;
+use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
 
 const GET_VERB: &str = "GET ";
@@ -114,6 +110,8 @@ fn main() {
 }
 
 fn handle_connection(mut stream: impl Read + Write + Unpin) {
+    use dunce::canonicalize;
+
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         if let Some(path) = translate_path(&line) {
@@ -204,14 +202,15 @@ fn translate_path(line: &str) -> Option<PathBuf> {
 
 fn log(category: LogCategory, text: &str) {
     use chrono::prelude::*;
+    use colored::*;
 
     let cat = match category {
         LogCategory::Info => "[INF]".white(),
         LogCategory::Warning => "[WRN]".yellow(),
         LogCategory::Error => "[ERR]".red()
     };
-    let local: DateTime<Local> = Local::now();
-    println!("{} {} {}", local.format("%T%.3f"), cat, text);
+
+    println!("{} {} {}", Local::now().format("%T%.3f"), cat, text);
 }
 
 #[cfg(test)]
@@ -221,7 +220,7 @@ mod tests {
     #[test]
     fn can_translate_paths() -> () {
         let result = translate_path(&"GET /foo.txt HTTP/1.1");
-        let pb = std::env::current_dir().expect("Could not get current_dir").join("foo.txt");
+        let pb = std::env::current_dir().unwrap().join("foo.txt");
         assert_eq!(result, Some(pb));
     }
 }
