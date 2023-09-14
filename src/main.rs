@@ -88,21 +88,27 @@ fn main() {
     let protocol = match tls_acceptor { Some(_) => "https://", None => "http://" };
     log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), protocol, bind_addr));
 
-    let listener = TcpListener::bind(bind_addr).unwrap();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                match &tls_acceptor {
-                    Some(acceptor) => {
-                        let stream = acceptor.accept(stream).unwrap();
-                        handle_connection(stream);
-                    },
-                    None => {
-                        handle_connection(stream);
+    match TcpListener::bind(&bind_addr) {
+        Ok(listener) => {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        match &tls_acceptor {
+                            Some(acceptor) => {
+                                let stream = acceptor.accept(stream).unwrap();
+                                handle_connection(stream);
+                            },
+                            None => {
+                                handle_connection(stream);
+                            }
+                        }
                     }
+                    Err(_) => { /* connection failed */ }
                 }
             }
-            Err(_) => { /* connection failed */ }
+        },
+        Err(err) => {
+            log(LogCategory::Error, &format!("Could not bind to {}{}. {}. Exiting ...", protocol, bind_addr, err));
         }
     }
 }
