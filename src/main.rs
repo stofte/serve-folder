@@ -30,7 +30,7 @@ struct Args {
     certificate_password: Option<String>,
 
     /// Server base directory. Defaults to the current directory if not set.
-    wwwroot: Option<std::path::PathBuf>,
+    wwwroot: Option<PathBuf>,
 }
 
 enum LogCategory {
@@ -142,7 +142,7 @@ fn handle_connection(mut stream: impl Read + Write + Unpin) {
             };
             match file_ok {
                 true => {
-                    let f_wrapped = std::fs::File::open(&path);
+                    let f_wrapped = File::open(&path);
                     if f_wrapped.is_ok() {
                         // File could be opened
                         let f = f_wrapped.unwrap();
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn can_translate_paths() -> () {
         let result = translate_path(&"GET /foo.txt HTTP/1.1");
-        let pb = std::env::current_dir().unwrap().join("foo.txt");
+        let pb = current_dir().unwrap().join("foo.txt");
         assert_eq!(result, Some(pb));
     }
 }
