@@ -81,11 +81,12 @@ fn main() {
 
     let base_dir = current_dir().expect("Failed to get current dir");
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
-    let protocol = match tls_acceptor { Some(_) => "https://", None => "http://" };
-    log(LogCategory::Info, &format!("Serving \"{}\" @ {}{}", base_dir.to_string_lossy(), protocol, bind_addr));
+    let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
 
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {
+            let local_addr = listener.local_addr().or(bind_addr.parse()).unwrap();
+            log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_addr));
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
@@ -104,7 +105,7 @@ fn main() {
             }
         },
         Err(err) => {
-            log(LogCategory::Error, &format!("Could not bind to {}{}. {}. Exiting ...", protocol, bind_addr, err));
+            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));
         }
     }
 }
