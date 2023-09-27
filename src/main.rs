@@ -7,6 +7,9 @@ use std::sync::Arc;
 use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
 
+pub mod native;
+use native::load_certificate;
+
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
 
@@ -29,6 +32,10 @@ struct Args {
     #[arg(short('w'), long)]
     certificate_password: Option<String>,
 
+    /// Locally installed TLS certificate thumprint to use
+    #[arg(short('t'), long)]
+    certificate_thumbprint: Option<String>,
+
     /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<PathBuf>,
 }
@@ -40,6 +47,7 @@ enum LogCategory {
 }
 
 fn main() {
+
     let args = Args::parse();
 
     let is_pfx_file = match &args.certificate_filename {
@@ -51,6 +59,9 @@ fn main() {
     };
 
     let mut tls_acceptor: Option<Arc<TlsAcceptor>> = None;
+
+    // Check if there's a certificate provided via a file or if we should
+    // check the store for a certificate thumbprint instead.
     if is_pfx_file {
         let mut file = File::open(args.certificate_filename.unwrap()).unwrap();
         let mut identity = vec![];
@@ -65,6 +76,17 @@ fn main() {
             },
             Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
         };
+    } else if let Some(cert_thumbprint) = &args.certificate_thumbprint {
+        let cert_data = load_certificate(cert_thumbprint).unwrap();
+        let cert_pw = String::from("");
+        match Identity::from_pkcs12(&cert_data, &cert_pw) {
+            Ok(identity) => {
+                let acceptor = TlsAcceptor::new(identity).unwrap();
+                let acceptor = Arc::new(acceptor);
+                tls_acceptor = Some(acceptor);
+            },
+            Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
+        };        
     }
 
     // Parse and set current directory
