@@ -8,7 +8,7 @@ use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
 
 pub mod native;
-use native::load_certificate;
+use native::{load_system_certificate, Error};
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -46,6 +46,20 @@ enum LogCategory {
     Error,
 }
 
+struct RequestInfo {
+    method: String,
+    mapped_path: PathBuf,
+}
+
+impl RequestInfo {
+    fn new(method: String, path: PathBuf) -> RequestInfo {
+        RequestInfo {
+            method: method,
+            mapped_path: path
+        }
+    }
+}
+
 fn main() {
 
     let args = Args::parse();
@@ -59,26 +73,33 @@ fn main() {
     };
 
     let mut tls_acceptor: Option<Arc<TlsAcceptor>> = None;
+    let mut cert_data = vec![];
 
     // Check if there's a certificate provided via a file or if we should
     // check the store for a certificate thumbprint instead.
     if is_pfx_file {
         let mut file = File::open(args.certificate_filename.unwrap()).unwrap();
-        let mut identity = vec![];
-        file.read_to_end(&mut identity).unwrap();
+        file.read_to_end(&mut cert_data).unwrap();
+    } else if let Some(cert_thumbprint) = &args.certificate_thumbprint {
+        match load_system_certificate(cert_thumbprint) {
+            Ok(pfx_bin) => cert_data = pfx_bin,
+            Err(err) => {
+                let msg = match err {
+                    Error::ThumbprintLength => { "Thumbprint error: SHA1 thumbprint with 40 characters expected".to_string() },
+                    Error::ThumbprintEncoding(msg) => { format!("Thumbprint error: {}", msg) },
+                    Error::FindCertificate => { format!("Could not find certificate: {}", cert_thumbprint) },
+                    Error::CertificateOperation(msg) => { format!("Certificate operation failed: {}", msg) },
+                };
+                println!("{}", msg);
+                return;
+            }
+        };
+    }
+
+    // if we actually obtained a certificate, we try to init native-tls to receive https calls
+    if cert_data.len() > 1 {
         // Certs without passwords are usually empty string.
         let cert_pw = args.certificate_password.unwrap_or(String::from(""));
-        match Identity::from_pkcs12(&identity, &cert_pw) {
-            Ok(identity) => {
-                let acceptor = TlsAcceptor::new(identity).unwrap();
-                let acceptor = Arc::new(acceptor);
-                tls_acceptor = Some(acceptor);
-            },
-            Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
-        };
-    } else if let Some(cert_thumbprint) = &args.certificate_thumbprint {
-        let cert_data = load_certificate(cert_thumbprint).unwrap();
-        let cert_pw = String::from("");
         match Identity::from_pkcs12(&cert_data, &cert_pw) {
             Ok(identity) => {
                 let acceptor = TlsAcceptor::new(identity).unwrap();
@@ -86,7 +107,7 @@ fn main() {
                 tls_acceptor = Some(acceptor);
             },
             Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
-        };        
+        };
     }
 
     // Parse and set current directory
@@ -137,7 +158,8 @@ fn handle_connection(mut stream: impl Read + Write + Unpin) {
 
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
-        if let Some(path) = translate_path(&line) {
+        if let Some(request_info) = translate_path(&line) {
+            let path = request_info.mapped_path;
             let mut writer = BufWriter::new(stream);
             let mut file_size = 0;
             let mut norm_path = path.to_string_lossy();
@@ -196,12 +218,14 @@ fn handle_connection(mut stream: impl Read + Write + Unpin) {
                     response_status = String::from("404 Not Found");
                 }
             }
-            log(LogCategory::Info, &format!("Request {} => {}", &line[0..(line.len() - HTTP_VER.len())], response_status));
+            log(LogCategory::Info, &format!("Request {} => {}", &request_info.method, response_status));
+        } else {
+            log(LogCategory::Info, &format!("Unsupported method"));
         }
     }
 }
 
-fn translate_path(line: &str) -> Option<PathBuf> {
+fn translate_path(line: &str) -> Option<RequestInfo> {
     if line.starts_with(GET_VERB) && line.ends_with(HTTP_VER) {
         // Remove verb + HTTP version
         let mut path = String::from(&line[GET_VERB.len()..]);
@@ -213,9 +237,10 @@ fn translate_path(line: &str) -> Option<PathBuf> {
 
         return match url::Url::parse(&dummyurl) {
             Ok(url) => {
-                Some(std::path::Path::new(&cur_dir)
+                let path_buf = std::path::Path::new(&cur_dir)
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
-                    .join(".".to_owned() + &url.path().replace("/", "\\")))
+                    .join(".".to_owned() + &url.path().replace("/", "\\"));
+                Some(RequestInfo::new(String::from(GET_VERB), path_buf))
             },
             Err(_) => None
         }
@@ -237,13 +262,13 @@ fn log(category: LogCategory, text: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+mod main_tests {
     use super::*;
 
     #[test]
     fn can_translate_paths() -> () {
-        let result = translate_path(&"GET /foo.txt HTTP/1.1");
+        let result = translate_path(&"GET /foo.txt HTTP/1.1").unwrap();
         let pb = current_dir().unwrap().join("foo.txt");
-        assert_eq!(result, Some(pb));
+        assert_eq!(result.mapped_path, pb);
     }
 }

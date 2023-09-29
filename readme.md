@@ -45,3 +45,4 @@ Tested on Windows only for now.
 
 - [OpenSSL certificate operations for "removing" password](https://serverfault.com/a/1106205/18877)
 - [How to create PCSTR](https://github.com/microsoft/windows-rs/issues/2344) (only for `windows` crate)
+- [GetLastError has issues with non-win32 errors](https://github.com/microsoft/windows-rs/issues/2639)
