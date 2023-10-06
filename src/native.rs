@@ -2,7 +2,6 @@ use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use windows_sys::w;
-use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Security::Cryptography::{
     CertCloseStore, CertFindCertificateInStore, CertOpenStore, CryptStringToBinaryW,
     CertAddCertificateContextToStore, CertFreeCertificateContext, PFXExportCertStoreEx,
@@ -37,7 +36,7 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
     ) };
 
     if memory_store.is_null() {
-        return Err(Error::CertificateOperation(String::from("Opening memory store")));
+        return Err(Error::CertificateOperation(get_last_error("Opening memory store.")));
     }
 
     let store_name = w!("My");
@@ -50,7 +49,7 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
     ) };
 
     if user_store.is_null() {
-        return Err(Error::CertificateOperation(String::from("Opening user store")));
+        return Err(Error::CertificateOperation(get_last_error("Opening user store.")));
     }
 
     let cert_thumbprint = OsStr::new(thumbprint)
@@ -75,7 +74,7 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
         null_mut(),
         null_mut(),
     ) } == 0 {
-        return Err(Error::ThumbprintEncoding(get_last_error()));
+        return Err(Error::ThumbprintEncoding(get_last_error("Encrypting string.")));
     }
 
     let cert_context = unsafe { CertFindCertificateInStore(
@@ -97,15 +96,15 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
         CERT_STORE_ADD_USE_EXISTING,
         null_mut()
     ) } == 0 {
-        return Err(Error::CertificateOperation(String::from("Adding certificate to memory store")));
+        return Err(Error::CertificateOperation(get_last_error("Adding certificate to memory store.")));
     }
 
     if unsafe { CertFreeCertificateContext(cert_context) } == 0 {
-        return Err(Error::CertificateOperation(String::from("Releasing certificate context")));
+        return Err(Error::CertificateOperation(get_last_error("Releasing certificate context.")));
     }
 
     if unsafe { CertCloseStore(user_store, CERT_CLOSE_STORE_CHECK_FLAG) } == 0 {
-        return Err(Error::CertificateOperation(String::from("Closing user store")));   
+        return Err(Error::CertificateOperation(get_last_error("Closing user store.")));
     }
 
     // First call sets the size of the certificate in cbData.
@@ -119,14 +118,16 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
         pbData: null_mut(),
     };
 
+    let export_flags = EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY;
+
     if unsafe { PFXExportCertStoreEx(
         memory_store,
         &mut pfx_blob,
         null_mut(),
         null_mut(),
-        EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY
+        export_flags
     ) } == 0 {
-        return Err(Error::CertificateOperation(String::from("Compute PFX size")));   
+        return Err(Error::CertificateOperation(get_last_error("Size computation failed.")));
     } else {
         pfx_vec = vec![0; pfx_blob.cbData as usize];
         pfx_blob.pbData = pfx_vec.as_ptr() as _;
@@ -135,14 +136,14 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
             &mut pfx_blob,
             null_mut(),
             null_mut(),
-            EXPORT_PRIVATE_KEYS | REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY
+            export_flags
         ) } == 0 {
-            return Err(Error::CertificateOperation(String::from("Export PFX")));   
+            return Err(Error::CertificateOperation(get_last_error("Exporting certficiate.")));   
         }
     }
 
     if unsafe { CertCloseStore(memory_store, CERT_CLOSE_STORE_CHECK_FLAG) } == 0 {
-        return Err(Error::CertificateOperation(String::from("Closing memory store")));
+        return Err(Error::CertificateOperation(get_last_error("Closing memory store")));
     }
 
     // pfx_vec should contain the DER encoded certificate with private keys and all
@@ -150,11 +151,67 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
 }
 
 
-fn get_last_error() -> String {
-    // we only use the 'windows' crate for this error mapping thingy,
-    // but it has issues with cert/sspi errors, which do not get mapped correctly
-    // see: https://github.com/microsoft/windows-rs/issues/2639
-    let err = unsafe { GetLastError() };
-    return windows::Win32::Foundation::WIN32_ERROR(err)
-        .to_hresult().message().to_string();
+fn get_last_error(default_msg: &str) -> String {
+    // The below implementation is for a FFI interface to call
+    // GetLastError in C code to avoid issues with the current
+    // rust wrapper: https://github.com/microsoft/windows-rs/issues/2639
+    // Once the fix gets merged, this code can be removed and replaced with:
+    //
+    //     let err = unsafe { GetLastError() };
+    //     get_last_error_ex();
+    //     return windows::Win32::Foundation::WIN32_ERROR(err)
+    //         .to_hresult().message().to_string();    
+
+    let mut buffer: Vec<u16> = vec![0;1000];
+    let size = unsafe { GetWindowsErrorMessage(buffer.as_mut_ptr()) };
+    if size == 0 {
+        return String::from(default_msg);
+    }
+
+    return trim_u16_str(buffer).unwrap_or(String::from(default_msg));
+}
+
+fn trim_u16_str(data: Vec<u16>) -> Option<String> {
+    // filters out nulls
+    let trimmed: Vec<u16> = data
+        .into_iter()
+        .filter_map(|x| match x { 0 => None, _ => Some(x) })
+        .collect();
+    // check and remove newline
+    let n = trimmed.len();
+    let mut trimmed = &trimmed[0..n];
+    if trimmed[n-1] == 10 && trimmed[n-2] == 13 {
+        trimmed = &trimmed[0..n-2];
+    }
+    let msg = String::from_utf16(trimmed);
+    match msg {
+        Ok(msg) => Some(msg),
+        Err(_) => None
+    }
+}
+
+extern "C" {
+    fn GetWindowsErrorMessage(str: *mut u16) -> usize;
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    pub fn initialize() {
+        INIT.call_once(|| {
+            // initialization code here
+        });
+    }
+
+    #[test]
+    fn checks_for_thumbprint_length() {
+        initialize();
+        // This cert fails?!
+        let cert_data = load_system_certificate("72f26338e9a4aefa3d54fe2ab66aaf85ce711805").unwrap();
+        assert!(cert_data.len() > 0);
+    }
 }

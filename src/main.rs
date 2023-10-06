@@ -21,7 +21,7 @@ struct Args {
     port: u16,
 
     /// Network interface to bind
-    #[arg(short('b'), long, default_value = "localhost")]
+    #[arg(short('b'), long, default_value = "0.0.0.0")]
     bind: String,
 
     /// Filepath for TLS certificate
@@ -90,7 +90,7 @@ fn main() {
                     Error::FindCertificate => { format!("Could not find certificate: {}", cert_thumbprint) },
                     Error::CertificateOperation(msg) => { format!("Certificate operation failed: {}", msg) },
                 };
-                println!("{}", msg);
+                log(LogCategory::Error, &msg);
                 return;
             }
         };
@@ -135,8 +135,13 @@ fn main() {
                     Ok(stream) => {
                         match &tls_acceptor {
                             Some(acceptor) => {
-                                let stream = acceptor.accept(stream).unwrap();
-                                handle_connection(stream);
+                                match (acceptor.accept(stream)) {
+                                    Ok(stream) => handle_connection(stream),
+                                    Err(e) => {
+                                        log(LogCategory::Error, &format!("{}", e));
+                                        std::process::exit(-1);
+                                    }
+                                }
                             },
                             None => {
                                 handle_connection(stream);
@@ -240,7 +245,7 @@ fn translate_path(line: &str) -> Option<RequestInfo> {
                 let path_buf = std::path::Path::new(&cur_dir)
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
                     .join(".".to_owned() + &url.path().replace("/", "\\"));
-                Some(RequestInfo::new(String::from(GET_VERB), path_buf))
+                Some(RequestInfo::new(String::from("GET"), path_buf))
             },
             Err(_) => None
         }
