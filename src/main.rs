@@ -135,7 +135,7 @@ fn main() {
                     Ok(stream) => {
                         match &tls_acceptor {
                             Some(acceptor) => {
-                                match (acceptor.accept(stream)) {
+                                match acceptor.accept(stream) {
                                     Ok(stream) => handle_connection(stream),
                                     Err(e) => {
                                         log(LogCategory::Error, &format!("{}", e));
