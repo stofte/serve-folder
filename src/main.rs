@@ -6,6 +6,7 @@ use std::fs::File;
 use std::sync::Arc;
 use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
+use phf::phf_map;
 
 pub mod native;
 use native::{load_system_certificate, Error};
@@ -199,7 +200,8 @@ fn handle_connection(mut stream: impl Read + Write + Unpin) {
                         let lines = [
                             "HTTP/1.1 200 OK",
                             "Cache-Control: no-store",
-                            &format!("Content-Length: {}\n\n", file_size)
+                            &format!("Content-Type: {}", get_mimetype(&path)),
+                            &format!("Content-Length: {}\n\n", file_size),
                         ].join("\n");
                         if writer.write_all(lines.as_bytes()).is_ok() {
                             // All headers written, try to write file
@@ -264,6 +266,33 @@ fn log(category: LogCategory, text: &str) {
     };
 
     println!("{} {} {}", Local::now().format("%T%.3f"), cat, text);
+}
+
+static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
+    "html" => "text/html",
+    "css" => "text/css",
+    "js" => "application/javascript",
+    "svg" => "image/svg+xml",
+    "woff2" => "font/woff2",
+    "ico" => "image/x-icon",
+    "png" => "image/png",
+    "gif" => "image/gif",
+};
+
+fn get_mimetype(path: &PathBuf) -> &str {
+    match path.extension() {
+        Some(val) => {
+            let ext = val.to_string_lossy().to_string().to_lowercase();
+            match MIMETYPES.get(&ext) {
+                Some(mime) => mime,
+                None => {
+                    log(LogCategory::Warning, &format!("No mimetype for '{}'", ext));
+                    "text/plain"
+                }
+            }
+        }
+        None => "text/plain"
+    }
 }
 
 #[cfg(test)]
