@@ -15,7 +15,7 @@ chrono = "0.4.30"
 native-tls = "0.2.11"
 hex = "0.4.3"
 phf = { version = "0.11", features = ["macros"] }
-windows-sys = { version = "0.48", features = [
+windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
     "Win32_Security_Cryptography"] }
