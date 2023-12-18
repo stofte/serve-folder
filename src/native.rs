@@ -58,7 +58,6 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
 
     let cert_thumbprint = OsStr::new(thumbprint)
         .encode_wide()
-        .chain(Some(0))
         .collect::<Vec<u16>>();
 
     let hash_vec = vec![0; thumbprint.len() as usize];
@@ -66,7 +65,6 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
         cbData: thumbprint.len() as u32,
         pbData: hash_vec.as_ptr() as _,
     };
-
 
     if unsafe { CryptStringToBinaryW(
         &cert_thumbprint,
