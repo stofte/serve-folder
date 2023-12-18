@@ -6,11 +6,9 @@ nodes [http-server](https://www.npmjs.com/package/http-server).
 Tested on Windows only for now.
 
 - Improve logging
-- Make error handling non-fatal
 - Cross-platform handling
 - Default document (index.htm, index.html, etc)
-- Setting/configuring mime-types?
-- HTTPS (?)
+- Configuring mime-types?
 - Threading/pools?
 
 ## Usage
