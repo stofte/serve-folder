@@ -99,7 +99,8 @@ pub fn load_system_certificate(thumbprint: &str) -> Result<Vec<u8>, Error> {
         return Err(Error::CertificateOperation(get_last_error("Adding certificate to memory store.")));
     }
 
-    if unsafe { CertFreeCertificateContext(Some(cert_context)).into() } {
+    let freed_cert_context: bool = unsafe { CertFreeCertificateContext(Some(cert_context)) }.into();
+    if !freed_cert_context {
         return Err(Error::CertificateOperation(get_last_error("Releasing certificate context.")));
     }
 
