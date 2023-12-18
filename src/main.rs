@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::fs::File;
 use std::sync::Arc;
 use clap::Parser;
-use native_tls::{Identity, TlsAcceptor};
+use native_tls::{Identity, TlsAcceptor, HandshakeError};
 use phf::phf_map;
 
 pub mod native;
@@ -139,8 +139,13 @@ fn main() {
                                 match acceptor.accept(stream) {
                                     Ok(stream) => handle_connection(stream),
                                     Err(e) => {
-                                        log(LogCategory::Error, &format!("{}", e));
-                                        std::process::exit(-1);
+                                        match &e {
+                                            HandshakeError::Failure(ee) => {
+                                                // Likely because of self-signed not being in trusted roots
+                                                log(LogCategory::Error, &format!("{}", ee));
+                                            },
+                                            _ => ()
+                                        }
                                     }
                                 }
                             },
