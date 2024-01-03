@@ -1,6 +1,6 @@
 use std::io::{BufReader, BufWriter, Read, Write, BufRead};
 use std::env::{current_dir, set_current_dir};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::fs::File;
 use std::sync::Arc;
@@ -132,30 +132,7 @@ fn main() {
             let local_addr = listener.local_addr().or(bind_addr.parse()).unwrap();
             log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_addr));
             for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        match &tls_acceptor {
-                            Some(acceptor) => {
-                                match acceptor.accept(stream) {
-                                    Ok(stream) => handle_connection(stream),
-                                    Err(e) => {
-                                        match &e {
-                                            HandshakeError::Failure(ee) => {
-                                                // Likely because of self-signed not being in trusted roots
-                                                log(LogCategory::Error, &format!("{}", ee));
-                                            },
-                                            _ => ()
-                                        }
-                                    }
-                                }
-                            },
-                            None => {
-                                handle_connection(stream);
-                            }
-                        }
-                    }
-                    Err(_) => { /* connection failed */ }
-                }
+                handle_connection(stream, &tls_acceptor);
             }
         },
         Err(err) => {
@@ -164,7 +141,34 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: impl Read + Write + Unpin) {
+fn handle_connection(stream: Result<TcpStream, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
+    match stream {
+        Ok(stream) => {
+            match &tls_acceptor {
+                Some(acceptor) => {
+                    match acceptor.accept(stream) {
+                        Ok(stream) => handle_response(stream),
+                        Err(e) => {
+                            match &e {
+                                HandshakeError::Failure(ee) => {
+                                    // Likely because of self-signed not being in trusted roots
+                                    log(LogCategory::Error, &format!("{}", ee));
+                                },
+                                _ => ()
+                            }
+                        }
+                    }
+                },
+                None => {
+                    handle_response(stream);
+                }
+            }
+        }
+        Err(_) => { /* connection failed */ }
+    }
+}
+
+fn handle_response(mut stream: impl Read + Write + Unpin) {
     use dunce::canonicalize;
 
     let buf_reader = BufReader::new(&mut stream);
