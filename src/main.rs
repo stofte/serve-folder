@@ -15,7 +15,7 @@ use server::run_server;
 use log::{LogCategory, log};
 
 #[derive(Parser, Debug)]
-#[command(about="Basic utility for serving up a directory via HTTP", author, version = None, long_about = None)]
+#[command(about="Simple static HTTP server", author = None, version = None, long_about = None)]
 struct Args {
     /// Server port
     #[arg(short('p'), long, default_value_t = 8080)]
@@ -36,6 +36,10 @@ struct Args {
     /// Locally installed TLS certificate thumprint to use
     #[arg(short('t'), long)]
     certificate_thumbprint: Option<String>,
+
+    /// Default documents list. Specify option multiple times for each value in order of priority.
+    #[arg(short('d'), long, default_values = vec!["index.html"])]
+    default_documents: Option<Vec<String>>,
 
     /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<PathBuf>,
