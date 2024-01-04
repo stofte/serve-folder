@@ -1,7 +1,7 @@
 use std::env::current_dir;
 use std::io::{BufReader, BufWriter, Read, Write, BufRead};
 use std::fs::File;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use native_tls::{TlsAcceptor, HandshakeError};
@@ -15,7 +15,7 @@ pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>
     }
 }
 
-fn handle_connection(stream: Result<TcpStream, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
+fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
     match stream {
         Ok(stream) => {
             match &tls_acceptor {
@@ -42,7 +42,7 @@ fn handle_connection(stream: Result<TcpStream, std::io::Error>, tls_acceptor: &O
     }
 }
 
-fn handle_response(mut stream: impl Read + Write + Unpin) {
+fn handle_response(mut stream: impl Read + Write) {
     use dunce::canonicalize;
 
     let buf_reader = BufReader::new(&mut stream);
@@ -91,12 +91,11 @@ fn handle_response(mut stream: impl Read + Write + Unpin) {
                             if std::io::copy(&mut br, &mut writer).is_ok() {
                                 response_status = format!("{} ({} bytes)", &norm_path, file_size);
                             } else {
-                                log(LogCategory::Warning, &format!("Failed to write to file after headers"));
+                                log(LogCategory::Warning, &format!("Failed to write contents to response"));
                             }
                         } else {
-                            log(LogCategory::Info, &format!("Failed to write to response"));
+                            log(LogCategory::Info, &format!("Failed to write headers to response"));
                         }
-                        writer.write_all(lines.as_bytes()).expect("Could not write");
                     } else {
                         if !writer.write_all("HTTP/1.1 500 Internal Server Error\n".as_bytes()).is_ok() {
                             log(LogCategory::Info, &format!("Failed to write to response"));
@@ -184,6 +183,7 @@ fn get_mimetype(path: &PathBuf) -> &str {
 
 #[cfg(test)]
 mod main_tests {
+    use std::collections::VecDeque;
     use super::*;
 
     #[test]
@@ -191,5 +191,17 @@ mod main_tests {
         let result = translate_path(&"GET /foo.txt HTTP/1.1").unwrap();
         let pb = current_dir().unwrap().join("foo.txt");
         assert_eq!(result.mapped_path, pb);
+    }
+
+    #[test]
+    fn returns_expected_ok() -> () {
+        // this does assume that the current dir is the project root, 
+        // but this seems to be true even if cargo is run from elsewhere.
+        let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
+        handle_response(&mut veq);
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        println!("--{}--", response);
+        let mut res_lines = response.lines();
+        assert_eq!("HTTP/1.1 200 OK", res_lines.next().expect("No lines"));
     }
 }
