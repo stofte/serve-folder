@@ -86,6 +86,9 @@ fn handle_response(mut stream: impl Read + Write) {
                             &format!("Content-Type: {}", get_mimetype(&path)),
                             &format!("Content-Length: {}\r\n\r\n", file_size),
                         ].join("\r\n");
+
+                        // We dump the file directly into the response.
+                        // Ideally we would ensure crlf as newlines, etc.
                         if writer.write_all(lines.as_bytes()).is_ok() {
                             // All headers written, try to write file
                             if std::io::copy(&mut br, &mut writer).is_ok() {
@@ -182,26 +185,50 @@ fn get_mimetype(path: &PathBuf) -> &str {
 }
 
 #[cfg(test)]
-mod main_tests {
-    use std::collections::VecDeque;
+mod server_tests {
+    use std::{collections::VecDeque, fs};
     use super::*;
 
     #[test]
-    fn can_translate_paths() -> () {
+    fn can_translate_paths() {
         let result = translate_path(&"GET /foo.txt HTTP/1.1").unwrap();
         let pb = current_dir().unwrap().join("foo.txt");
         assert_eq!(result.mapped_path, pb);
     }
-
+ 
     #[test]
-    fn returns_expected_ok() -> () {
+    fn returns_expected_200_ok_response() {
+        // Check that:
+        // 1. we got an 200 ok response
+        // 2. mimetype is as expected (here, text/plain)
+        // 3. content-length is as expected
+        
         // this does assume that the current dir is the project root, 
         // but this seems to be true even if cargo is run from elsewhere.
         let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
+
         handle_response(&mut veq);
+
+        // parse out the response headers, etc
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
-        println!("--{}--", response);
         let mut res_lines = response.lines();
-        assert_eq!("HTTP/1.1 200 OK", res_lines.next().expect("No lines"));
+
+        let response_start_line = res_lines.next().expect("No lines");
+
+        let content_length_header = res_lines
+            .find(|l| l.starts_with("Content-Length")).expect("Could not find content-length header");
+        let content_length = content_length_header.split(":")
+            .last().expect("Incorrect header format")
+            .trim()
+            .parse::<i32>().expect("Could not parse content-length as number");
+
+        // Again, assumes current_dir = project root
+        let file_length = fs::read_to_string("readme.md").expect("Could not read file").len();
+
+        // check that we got a 200 ok
+        assert_eq!("HTTP/1.1 200 OK", response_start_line);
+
+        // check that our content-length matches the file itself
+        assert_eq!(content_length as usize, file_length);
     }
 }
