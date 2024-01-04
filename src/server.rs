@@ -84,8 +84,6 @@ fn handle_response(mut stream: impl Read + Write) {
                             "HTTP/1.1 200 OK",
                             "Cache-Control: no-store",
                             &format!("Content-Type: {}", get_mimetype(&path)),
-                            &format!("Content-Length: {}\n\n", file_size),
-                        ].join("\n");
                             &format!("Content-Length: {}\r\n\r\n", file_size),
                         ].join("\r\n");
                         if writer.write_all(lines.as_bytes()).is_ok() {
