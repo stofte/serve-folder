@@ -1,6 +1,6 @@
 use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
-use std::ptr::{null_mut};
+use std::ptr::null_mut;
 use windows::Win32::Foundation::GetLastError;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Security::Cryptography::{
