@@ -160,7 +160,7 @@ fn get_last_error(default_msg: &str) -> String {
 }
 
 #[cfg(test)]
-mod native_tests {
+mod tests {
     use super::*;
     use std::sync::Once;
 

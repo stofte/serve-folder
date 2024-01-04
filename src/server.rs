@@ -185,7 +185,7 @@ fn get_mimetype(path: &PathBuf) -> &str {
 }
 
 #[cfg(test)]
-mod server_tests {
+mod tests {
     use std::{collections::VecDeque, fs};
     use super::*;
 
