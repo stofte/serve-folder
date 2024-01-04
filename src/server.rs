@@ -86,6 +86,8 @@ fn handle_response(mut stream: impl Read + Write) {
                             &format!("Content-Type: {}", get_mimetype(&path)),
                             &format!("Content-Length: {}\n\n", file_size),
                         ].join("\n");
+                            &format!("Content-Length: {}\r\n\r\n", file_size),
+                        ].join("\r\n");
                         if writer.write_all(lines.as_bytes()).is_ok() {
                             // All headers written, try to write file
                             if std::io::copy(&mut br, &mut writer).is_ok() {
