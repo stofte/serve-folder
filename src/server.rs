@@ -140,8 +140,9 @@ fn translate_path(line: &str) -> Option<RequestInfo> {
         let mut path = String::from(&line[GET_VERB.len()..]);
         path.truncate(path.len() - HTTP_VER.len());
 
-        // Format into a URL, so we can use parsing from std lib
-        let dummyurl = String::from("http://localhost") + &path;
+        // Format into a URL, so we can use parsing from std lib.
+        // This also seems to prevent basic path traversel attempts.
+        let dummyurl = String::from("http://localhost/") + &path;
         let cur_dir = current_dir().expect("no path?");
 
         return match url::Url::parse(&dummyurl) {
@@ -187,7 +188,10 @@ fn get_mimetype(path: &PathBuf) -> &str {
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, fs};
+    use test_case::test_case;
     use super::*;
+
+    // These tests generally assume that the tests are run with project root as the current_dir.
 
     #[test]
     fn can_translate_paths() {
@@ -203,8 +207,6 @@ mod tests {
         // 2. mimetype is as expected (here, text/plain)
         // 3. content-length is as expected
         
-        // this does assume that the current dir is the project root, 
-        // but this seems to be true even if cargo is run from elsewhere.
         let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
 
         handle_response(&mut veq);
@@ -222,7 +224,6 @@ mod tests {
             .trim()
             .parse::<i32>().expect("Could not parse content-length as number");
 
-        // Again, assumes current_dir = project root
         let file_length = fs::read_to_string("readme.md").expect("Could not read file").len();
 
         // check that we got a 200 ok
@@ -230,5 +231,15 @@ mod tests {
 
         // check that our content-length matches the file itself
         assert_eq!(content_length as usize, file_length);
+    }
+
+    #[test_case("../../../foo"; "Regular")]
+    #[test_case("..\\..\\..\\foo"; "Regular 2nd")]
+    #[test_case("%2e%2e%2ffoo"; "Encoded")]
+    #[test_case("..%c0%affoo"; "Encoded 2nd")]
+    fn handles_path_traversel_attempts(str: &str) {
+        let request_header = format!("GET {} HTTP/1.1", str);
+        let result = translate_path(&request_header).unwrap();
+        assert!(result.mapped_path.starts_with(current_dir().unwrap()));
     }
 }
