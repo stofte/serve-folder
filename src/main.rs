@@ -15,7 +15,7 @@ use server::run_server;
 use log::{LogCategory, log};
 
 #[derive(Parser, Debug)]
-#[command(about="Simple static HTTP server", author = None, version = None, long_about = None)]
+#[command(about="Simple CLI server utility for hosting directories over HTTP", author = None, version = None, long_about = None)]
 struct Args {
     /// Server port
     #[arg(short('p'), long, default_value_t = 8080)]

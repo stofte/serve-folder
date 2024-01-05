@@ -1,13 +1,14 @@
-# Serve HTTP
+# Serve Folder
 
 WIP developer utility for serving a directory via HTTP(S), similar to
 nodes [http-server](https://www.npmjs.com/package/http-server).
 
 Tested on Windows only for now.
 
+- Implicit filetypes
+- Default document (index.htm, index.html, etc)
 - Improve logging
 - Cross-platform handling
-- Default document (index.htm, index.html, etc)
 - Configuring mime-types?
 - Threading/pools?
 

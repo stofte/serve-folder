@@ -1,5 +1,5 @@
 [package]
-name = "servehttp"
+name = "servefolder"
 description = "Simple CLI server utility for hosting directories over HTTP"
 version = "1.0.0"
 edition = "2021"
