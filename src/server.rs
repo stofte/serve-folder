@@ -167,7 +167,6 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
                     .join(".".to_owned() + &url.path().replace("/", "\\"))
                     .normalize_virtually();
-                println!("CANON {:?}", path_buf);
                 match path_buf {
                     Ok(v) => Ok(v),
                     Err(..) => Err(Error::PathParsingFailed)
