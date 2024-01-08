@@ -48,7 +48,7 @@ fn handle_response(mut stream: impl Read + Write) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         if let Some(request_info) = translate_path(&line) {
-            let path = request_info.mapped_path;
+            let path = request_info.mapped_path.clone();
             let mut writer = BufWriter::new(stream);
             let mut file_size = 0;
             let mut norm_path = path.to_string_lossy();
@@ -69,7 +69,8 @@ fn handle_response(mut stream: impl Read + Write) {
                     }
                 },
                 Err(err) => {
-                    log(LogCategory::Info, &format!("Failed to read metadata: {}", err));
+                    let mp = request_info.mapped_path;
+                    log(LogCategory::Info, &format!("Failed to read metadata for \"{} {}\" => \"{}\": {}", &request_info.method, &request_info.path, mp.display(), err));
                     false
                 }
             };
@@ -122,14 +123,16 @@ const HTTP_VER: &str = " HTTP/1.1";
 
 struct RequestInfo {
     method: String,
+    path: String,
     mapped_path: PathBuf,
 }
 
 impl RequestInfo {
-    fn new(method: String, path: PathBuf) -> RequestInfo {
+    fn new(method: String, path: String, mapped_path: PathBuf) -> RequestInfo {
         RequestInfo {
             method: method,
-            mapped_path: path
+            path: path,
+            mapped_path: mapped_path,
         }
     }
 }
@@ -150,7 +153,7 @@ fn translate_path(line: &str) -> Option<RequestInfo> {
                 let path_buf = std::path::Path::new(&cur_dir)
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
                     .join(".".to_owned() + &url.path().replace("/", "\\"));
-                Some(RequestInfo::new(String::from("GET"), path_buf))
+                Some(RequestInfo::new(String::from("GET"), path, path_buf))
             },
             Err(_) => None
         }
