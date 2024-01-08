@@ -148,7 +148,8 @@ impl RequestInfo {
 }
 
 fn translate_path(line: &str) -> Result<RequestInfo, Error> {
-    use dunce::canonicalize;
+    use normpath::PathExt;
+    use glob::glob;
 
     if line.starts_with(GET_VERB) && line.ends_with(HTTP_VER) {
         // Remove verb + HTTP version
@@ -162,10 +163,11 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
 
         let mapped_path = match url::Url::parse(&dummyurl) {
             Ok(url) => {
-                let path_buf = canonicalize(std::path::Path::new(&cur_dir)
+                let path_buf = std::path::Path::new(&cur_dir)
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
-                    .join(".".to_owned() + &url.path().replace("/", "\\")))
-                    ;
+                    .join(".".to_owned() + &url.path().replace("/", "\\"))
+                    .normalize_virtually();
+                println!("CANON {:?}", path_buf);
                 match path_buf {
                     Ok(v) => Ok(v),
                     Err(..) => Err(Error::PathParsingFailed)
@@ -174,13 +176,14 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
             Err(_) => Err(Error::PathParsingFailed)
         }?;
 
-        let mapped_path = String::from(mapped_path.to_string_lossy());
+        let mut mapped_path = String::from(mapped_path.as_path().to_string_lossy());
 
         let method = String::from("GET");
         let mut file_size = 0;
 
         match std::fs::metadata(&mapped_path) {
             Ok(metadata) => {
+                println!("OK ARM");
                 if metadata.is_file() {
                     file_size = metadata.len();
                     Ok(())
@@ -194,8 +197,39 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
                 }
             },
             Err(err) => {
-                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", mapped_path, err));
-                Err(Error::PathMetadataFailed)
+                // see if we can find it using globbing?
+                let mut matches = glob(&format!("{}.*", mapped_path))
+                    .expect("Failed to glob pattern");
+                
+                let glob_match_ok = match matches.next() {
+                    Some(file) => {
+                        match file {
+                            Ok(p) => {
+                                match std::fs::metadata(&p) {
+                                    Ok(metadata) => {
+                                        if metadata.is_file() {
+                                            file_size = metadata.len();
+                                            mapped_path = String::from(p.to_string_lossy());
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    },
+                                    Err(..) => false
+                                }
+                            },
+                            Err(..) => false
+                        }
+                    },
+                    None => false
+                };
+                let single_match = glob_match_ok && matches.next().is_none();
+                if single_match {
+                    Ok(())
+                } else {
+                    log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", mapped_path, err));
+                    Err(Error::PathMetadataFailed)
+                }
             }
         }?;
 
@@ -272,6 +306,29 @@ mod tests {
 
         // check that our content-length matches the file itself
         assert_eq!(content_length as usize, file_length);
+    }
+
+    #[test]
+    fn can_use_globs_to_match_to_filename() {
+        let mut veq = VecDeque::from(b"GET /readme HTTP/1.1".to_owned());
+
+        handle_response(&mut veq);
+        
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        
+        assert!(response.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn can_not_use_globs_if_multiple_matched_files() {
+        // We want to be deterministic if we also allow globbing
+        let mut veq = VecDeque::from(b"GET /Cargo HTTP/1.1".to_owned());
+
+        handle_response(&mut veq);
+        
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        
+        assert!(response.starts_with("HTTP/1.1 404"));
     }
 
     #[test]
