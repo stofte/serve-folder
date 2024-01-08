@@ -86,25 +86,44 @@ fn handle_response(mut stream: impl Read + Write) {
                     }
                 } else {
                     let status = format!("500 Internal Server Error");
-                    if !writer.write_all("HTTP/1.1 500 Internal Server Error\n".as_bytes()).is_ok() {
-                        log(LogCategory::Info, &status);
-                    }
+                    handle_http_error(&mut writer, 500, "Internal Server Error");
+                    log(LogCategory::Info, &status);
                     status
                 }
             },
             Err(Error::UnsupportedMethod) => {
                 log(LogCategory::Info, &format!("Unsupported method"));
-                writer.write_all("HTTP/1.1 405 Method Not Allowed\n".as_bytes()).expect("Could not write");
+                handle_http_error(&mut writer, 405, "Method Not Allowed");
                 String::from("405 Method Not Allowed")
             }
             Err(err) => {
                 log(LogCategory::Info, &format!("Error: {:?}", err));
-                writer.write_all("HTTP/1.1 404 Not Found\n".as_bytes()).expect("Could not write");
+                handle_http_error(&mut writer, 404, "Not Found");
                 String::from("404 Not Found")
             }
         };
         log(LogCategory::Info, &format!("Request {} => {}", &line, response_status));
     }
+}
+
+fn handle_http_error(writer: &mut BufWriter<impl Write>, code: u32, body: &str) {
+    let status = match code {
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error"
+    };
+    let header = format!("HTTP/1.1 {} {}", code, status);
+    let content_type = "Content-Type: text/plain".to_string();
+    let content_length = format!("Content-Length: {}", body.len());
+
+    let lines = [header,
+        content_type,
+        content_length,
+        "".to_string(),
+        body.to_string()
+    ].join("\r\n");
+
+    writer.write_all(lines.as_bytes()).expect("Could not write");
 }
 
 const GET_VERB: &str = "GET ";
@@ -164,7 +183,6 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
             Ok(metadata) => {
                 if metadata.is_file() {
                     file_size = metadata.len();
-                    //path = String::from(canonicalize(&path).expect("Failed to canonicalize path").to_string_lossy()).into();
                     Ok(())
                 } else {
                     log(LogCategory::Info, &format!(
@@ -254,6 +272,26 @@ mod tests {
 
         // check that our content-length matches the file itself
         assert_eq!(content_length as usize, file_length);
+    }
+
+    #[test]
+    fn returns_expected_405_method_not_allowed() {
+        let mut veq = VecDeque::from(b"PUT /readme.md HTTP/1.1".to_owned());
+
+        handle_response(&mut veq);
+
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        assert!(response.starts_with("HTTP/1.1 405"));
+    }
+
+    #[test]
+    fn returns_expected_404_not_found() {
+        let mut veq = VecDeque::from(b"GET /some_file_not_here HTTP/1.1".to_owned());
+
+        handle_response(&mut veq);
+
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        assert!(response.starts_with("HTTP/1.1 404"));
     }
 
     #[test_case("../../../foo"; "Regular")]
