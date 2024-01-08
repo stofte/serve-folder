@@ -182,7 +182,6 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
 
         match std::fs::metadata(&mapped_path) {
             Ok(metadata) => {
-                println!("OK ARM");
                 if metadata.is_file() {
                     file_size = metadata.len();
                     Ok(())
@@ -287,7 +286,6 @@ mod tests {
 
         // parse out the response headers, etc
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
-        println!("--{}--", response);
         let mut res_lines = response.lines();
 
         let response_start_line = res_lines.next().expect("No lines");
