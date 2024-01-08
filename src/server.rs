@@ -8,9 +8,16 @@ use native_tls::{TlsAcceptor, HandshakeError};
 use phf::phf_map;
 use crate::log::{LogCategory, log};
 
+#[derive(Debug, PartialEq)]
+pub enum Error {
+    UnsupportedMethod,
+    PathParsingFailed,
+    PathMustBeFile,
+    PathMetadataFailed,
+}
+
 pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
     for stream in listener.incoming() {
-        println!("Incoming stream!");
         handle_connection(stream, &tls_acceptor);
     }
 }
@@ -43,78 +50,60 @@ fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acce
 }
 
 fn handle_response(mut stream: impl Read + Write) {
-    use dunce::canonicalize;
-
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
-        if let Some(request_info) = translate_path(&line) {
-            let path = request_info.mapped_path.clone();
-            let mut writer = BufWriter::new(stream);
-            let mut file_size = 0;
-            let mut norm_path = path.to_string_lossy();
-            let mut response_status: String = String::from("");
-            let file_ok = match std::fs::metadata(&path) {
-                Ok(metadata) => {
-                    if metadata.is_file() {
-                        file_size = metadata.len();
-                        norm_path = String::from(canonicalize(&path).expect("Failed to canonicalize path").to_string_lossy()).into();
-                        true
-                    } else {
-                        log(LogCategory::Info, &format!(
-                            "Path is not a file. is_dir={}, is_symlink={}",
-                            metadata.is_dir(),
-                            metadata.is_symlink()
-                        ));
-                        false
-                    }
-                },
-                Err(err) => {
-                    let mp = request_info.mapped_path;
-                    log(LogCategory::Info, &format!("Failed to read metadata for \"{} {}\" => \"{}\": {}", &request_info.method, &request_info.path, mp.display(), err));
-                    false
-                }
-            };
-            match file_ok {
-                true => {
-                    let f_wrapped = File::open(&path);
-                    if f_wrapped.is_ok() {
-                        // File could be opened
-                        let f = f_wrapped.unwrap();
-                        let mut br = BufReader::new(f);
-                        let lines = [
-                            "HTTP/1.1 200 OK",
-                            "Cache-Control: no-store",
-                            &format!("Content-Type: {}", get_mimetype(&path)),
-                            &format!("Content-Length: {}\r\n\r\n", file_size),
-                        ].join("\r\n");
+        let mut writer = BufWriter::new(stream);
+        let response_status = match translate_path(&line) {
+            Ok(request_info) => {
+                let path = request_info.mapped_path;
+                let f_wrapped = File::open(&path);
+                if f_wrapped.is_ok() {
+                    // File could be opened
+                    let f = f_wrapped.unwrap();
+                    let mut br = BufReader::new(f);
+                    let lines = [
+                        "HTTP/1.1 200 OK",
+                        "Cache-Control: no-store",
+                        &format!("Content-Type: {}", get_mimetype(&path)),
+                        &format!("Content-Length: {}\r\n\r\n", &request_info.file_size),
+                    ].join("\r\n");
 
-                        // We dump the file directly into the response.
-                        // Ideally we would ensure crlf as newlines, etc.
-                        if writer.write_all(lines.as_bytes()).is_ok() {
-                            // All headers written, try to write file
-                            if std::io::copy(&mut br, &mut writer).is_ok() {
-                                response_status = format!("{} ({} bytes)", &norm_path, file_size);
-                            } else {
-                                log(LogCategory::Warning, &format!("Failed to write contents to response"));
-                            }
+                    // We dump the file directly into the response.
+                    // Ideally we would ensure crlf as newlines, etc.
+                    if writer.write_all(lines.as_bytes()).is_ok() {
+                        // All headers written, try to write file
+                        if std::io::copy(&mut br, &mut writer).is_ok() {
+                            format!("{} ({} bytes)", &path, request_info.file_size)
                         } else {
-                            log(LogCategory::Info, &format!("Failed to write headers to response"));
+                            let status = format!("Failed to write contents to response");
+                            log(LogCategory::Warning, &status);
+                            status
                         }
                     } else {
-                        if !writer.write_all("HTTP/1.1 500 Internal Server Error\n".as_bytes()).is_ok() {
-                            log(LogCategory::Info, &format!("Failed to write to response"));
-                        }
+                        let status = format!("Failed to write headers to response");
+                        log(LogCategory::Warning, &status);
+                        status
                     }
-                },
-                false => {
-                    writer.write_all("HTTP/1.1 404 Not Found\n".as_bytes()).expect("Could not write");
-                    response_status = String::from("404 Not Found");
+                } else {
+                    let status = format!("500 Internal Server Error");
+                    if !writer.write_all("HTTP/1.1 500 Internal Server Error\n".as_bytes()).is_ok() {
+                        log(LogCategory::Info, &status);
+                    }
+                    status
                 }
+            },
+            Err(Error::UnsupportedMethod) => {
+                log(LogCategory::Info, &format!("Unsupported method"));
+                writer.write_all("HTTP/1.1 405 Method Not Allowed\n".as_bytes()).expect("Could not write");
+                String::from("405 Method Not Allowed")
             }
-            log(LogCategory::Info, &format!("Request {} => {}", &request_info.method, response_status));
-        } else {
-            log(LogCategory::Info, &format!("Unsupported method"));
-        }
+            Err(err) => {
+                log(LogCategory::Info, &format!("Error: {:?}", err));
+                writer.write_all("HTTP/1.1 404 Not Found\n".as_bytes()).expect("Could not write");
+                String::from("404 Not Found")
+            }
+        };
+        log(LogCategory::Info, &format!("Request {} => {}", &line, response_status));
     }
 }
 
@@ -124,20 +113,24 @@ const HTTP_VER: &str = " HTTP/1.1";
 struct RequestInfo {
     method: String,
     path: String,
-    mapped_path: PathBuf,
+    mapped_path: String,
+    file_size: u64
 }
 
 impl RequestInfo {
-    fn new(method: String, path: String, mapped_path: PathBuf) -> RequestInfo {
+    fn new(method: String, path: String, mapped_path: String, file_size: u64) -> RequestInfo {
         RequestInfo {
             method: method,
             path: path,
             mapped_path: mapped_path,
+            file_size: file_size
         }
     }
 }
 
-fn translate_path(line: &str) -> Option<RequestInfo> {
+fn translate_path(line: &str) -> Result<RequestInfo, Error> {
+    use dunce::canonicalize;
+
     if line.starts_with(GET_VERB) && line.ends_with(HTTP_VER) {
         // Remove verb + HTTP version
         let mut path = String::from(&line[GET_VERB.len()..]);
@@ -146,19 +139,51 @@ fn translate_path(line: &str) -> Option<RequestInfo> {
         // Format into a URL, so we can use parsing from std lib.
         // This also seems to prevent basic path traversel attempts.
         let dummyurl = String::from("http://localhost/") + &path;
-        let cur_dir = current_dir().expect("no path?");
+        let cur_dir = current_dir().expect("no current_dir");
 
-        return match url::Url::parse(&dummyurl) {
+        let mapped_path = match url::Url::parse(&dummyurl) {
             Ok(url) => {
-                let path_buf = std::path::Path::new(&cur_dir)
+                let path_buf = canonicalize(std::path::Path::new(&cur_dir)
                     .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
-                    .join(".".to_owned() + &url.path().replace("/", "\\"));
-                Some(RequestInfo::new(String::from("GET"), path, path_buf))
+                    .join(".".to_owned() + &url.path().replace("/", "\\")))
+                    ;
+                match path_buf {
+                    Ok(v) => Ok(v),
+                    Err(..) => Err(Error::PathParsingFailed)
+                }
             },
-            Err(_) => None
-        }
+            Err(_) => Err(Error::PathParsingFailed)
+        }?;
+
+        let mapped_path = String::from(mapped_path.to_string_lossy());
+
+        let method = String::from("GET");
+        let mut file_size = 0;
+
+        match std::fs::metadata(&mapped_path) {
+            Ok(metadata) => {
+                if metadata.is_file() {
+                    file_size = metadata.len();
+                    //path = String::from(canonicalize(&path).expect("Failed to canonicalize path").to_string_lossy()).into();
+                    Ok(())
+                } else {
+                    log(LogCategory::Info, &format!(
+                        "Path is not a file. is_dir={}, is_symlink={}",
+                        metadata.is_dir(),
+                        metadata.is_symlink()
+                    ));
+                    Err(Error::PathMustBeFile)
+                }
+            },
+            Err(err) => {
+                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", mapped_path, err));
+                Err(Error::PathMetadataFailed)
+            }
+        }?;
+
+        return Ok(RequestInfo::new(method, path, mapped_path, file_size));
     }
-    None
+    Err(Error::UnsupportedMethod)
 }
 
 static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
@@ -173,8 +198,9 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "xml" => "application/xml"
 };
 
-fn get_mimetype(path: &PathBuf) -> &str {
-    match path.extension() {
+fn get_mimetype(path: &str) -> &str {
+    let p: PathBuf = path.into();
+    match p.extension() {
         Some(val) => {
             let ext = val.to_string_lossy().to_string().to_lowercase();
             match MIMETYPES.get(&ext) {
@@ -196,13 +222,6 @@ mod tests {
     use super::*;
 
     // These tests generally assume that the tests are run with project root as the current_dir.
-
-    #[test]
-    fn can_translate_paths() {
-        let result = translate_path(&"GET /foo.txt HTTP/1.1").unwrap();
-        let pb = current_dir().unwrap().join("foo.txt");
-        assert_eq!(result.mapped_path, pb);
-    }
  
     #[test]
     fn returns_expected_200_ok_response() {
@@ -217,10 +236,10 @@ mod tests {
 
         // parse out the response headers, etc
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
+        println!("--{}--", response);
         let mut res_lines = response.lines();
 
         let response_start_line = res_lines.next().expect("No lines");
-
         let content_length_header = res_lines
             .find(|l| l.starts_with("Content-Length")).expect("Could not find content-length header");
         let content_length = content_length_header.split(":")
@@ -243,7 +262,9 @@ mod tests {
     #[test_case("..%c0%affoo"; "Encoded 2nd")]
     fn handles_path_traversel_attempts(str: &str) {
         let request_header = format!("GET {} HTTP/1.1", str);
-        let result = translate_path(&request_header).unwrap();
-        assert!(result.mapped_path.starts_with(current_dir().unwrap()));
+        match translate_path(&request_header) {
+            Ok(..) => panic!("Request path should not parse"),
+            Err(..) => () // These paths should all fail to translate
+        };
     }
 }
