@@ -170,6 +170,7 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "ico" => "image/x-icon",
     "png" => "image/png",
     "gif" => "image/gif",
+    "xml" => "application/xml"
 };
 
 fn get_mimetype(path: &PathBuf) -> &str {
