@@ -14,6 +14,8 @@ use native::{load_system_certificate, Error};
 use server::run_server;
 use log::{LogCategory, log};
 
+const DEFAULT_OPTIONS_BIND_VALUE: &str = "0.0.0.0";
+
 #[derive(Parser, Debug)]
 #[command(about="Simple CLI server utility for hosting directories over HTTP", author = None, version = None, long_about = None)]
 struct Args {
@@ -22,7 +24,7 @@ struct Args {
     port: u16,
 
     /// Network interface to bind
-    #[arg(short('b'), long, default_value = "0.0.0.0")]
+    #[arg(short('b'), long, default_value = DEFAULT_OPTIONS_BIND_VALUE)]
     bind: String,
 
     /// Filepath for TLS certificate
@@ -43,6 +45,18 @@ struct Args {
 
     /// Server base directory. Defaults to the current directory if not set.
     wwwroot: Option<PathBuf>,
+}
+
+fn print_server_addr(sock: &TcpListener, protocol: &str) {
+    let base_dir = current_dir().expect("Failed to get current dir");
+    let local_addr = sock.local_addr().unwrap();
+    let mut local_str = local_addr.to_string();
+    if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
+        // While we can bind to 0.0.0.0 to match all interfaces, this does not work when connecting,
+        // so for clickable links we replace the addr with localhost instead.
+        local_str = ["localhost".to_string(), local_addr.port().to_string()].join(":");
+    }
+    log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_str));
 }
 
 fn main() {
@@ -107,14 +121,13 @@ fn main() {
         None => ()
     };
 
-    let base_dir = current_dir().expect("Failed to get current dir");
+    
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
 
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {
-            let local_addr = listener.local_addr().or(bind_addr.parse()).unwrap();
-            log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_addr));
+            print_server_addr(&listener, protocol);
             run_server(listener, &tls_acceptor);
         },
         Err(err) => {
