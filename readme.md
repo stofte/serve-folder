@@ -14,35 +14,35 @@ Tested on Windows only for now.
 
 ## Usage
 
-    Basic utility for serving up a directory via HTTP
+    Simple CLI server utility for hosting directories over HTTP
 
-    Usage: servehttp.exe [OPTIONS] [WWWROOT]
+    Usage: servefolder.exe [OPTIONS] [WWWROOT]
 
     Arguments:
-      [WWWROOT]  Server base directory. Defaults to the current directory if not set
+      [WWWROOT]  Web root directory. Defaults to the current directory if not set
 
     Options:
       -p, --port <PORT>
               Server port [default: 8080]
       -b, --bind <BIND>
-              Network interface to bind [default: localhost]
+              Network interface to bind [default: 0.0.0.0]
       -f, --certificate-filename <CERTIFICATE_FILENAME>
               Filepath for TLS certificate
       -w, --certificate-password <CERTIFICATE_PASSWORD>
               Optional password for the above TLS certificate
       -t, --certificate-thumbprint <CERTIFICATE_THUMBPRINT>
               Locally installed TLS certificate thumprint to use
+      -d, --default-documents <DEFAULT_DOCUMENTS>
+              Default documents list. Specify option multiple times for each value in order of priority [default: index.html]
       -h, --help
               Print help
 
 ## Examples:
 
-	> servehttp -p 80 C:\temp\
-	Serving "C:\temp" @ localhost:80
+	C:\temp>servefolder
+    14:32:44.624 [INF] Serving "C:\temp" @ http://localhost:8080
 
 ## Notes
 
 - [OpenSSL certificate operations for "removing" password](https://serverfault.com/a/1106205/18877)
-- [How to create PCSTR](https://github.com/microsoft/windows-rs/issues/2344) (only for `windows` crate)
-- [GetLastError has issues with non-win32 errors](https://github.com/microsoft/windows-rs/issues/2639)
 - [Reading Windows Terminal colors is not supported](https://github.com/microsoft/terminal/issues/3718)

@@ -43,7 +43,7 @@ struct Args {
     #[arg(short('d'), long, default_values = vec!["index.html"])]
     default_documents: Option<Vec<String>>,
 
-    /// Server base directory. Defaults to the current directory if not set.
+    /// Web root directory. Defaults to the current directory if not set.
     wwwroot: Option<PathBuf>,
 }
 
