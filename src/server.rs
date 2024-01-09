@@ -16,19 +16,19 @@ pub enum Error {
     PathMetadataFailed,
 }
 
-pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
+pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, default_documents: Option<Vec<String>>) {
     for stream in listener.incoming() {
-        handle_connection(stream, &tls_acceptor);
+        handle_connection(stream, &tls_acceptor, &default_documents);
     }
 }
 
-fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>) {
+fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>, default_documents: &Option<Vec<String>>) {
     match stream {
         Ok(stream) => {
             match &tls_acceptor {
                 Some(acceptor) => {
                     match acceptor.accept(stream) {
-                        Ok(stream) => handle_response(stream),
+                        Ok(stream) => handle_response(stream, default_documents),
                         Err(e) => {
                             match &e {
                                 HandshakeError::Failure(ee) => {
@@ -41,7 +41,7 @@ fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acce
                     }
                 },
                 None => {
-                    handle_response(stream);
+                    handle_response(stream, default_documents);
                 }
             }
         }
@@ -49,11 +49,11 @@ fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acce
     }
 }
 
-fn handle_response(mut stream: impl Read + Write) {
+fn handle_response(mut stream: impl Read + Write, default_documents: &Option<Vec<String>>) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         let mut writer = BufWriter::new(stream);
-        let response_status = match translate_path(&line) {
+        let response_status = match translate_path(&line, default_documents) {
             Ok(request_info) => {
                 let path = request_info.mapped_path;
                 let f_wrapped = File::open(&path);
@@ -147,7 +147,21 @@ impl RequestInfo {
     }
 }
 
-fn translate_path(line: &str) -> Result<RequestInfo, Error> {
+fn map_to_default_document(path: &str, default_documents: &Option<Vec<String>>) -> Option<String> {
+    if let Some(doclist) = default_documents {
+        let mut p = path.to_string();
+        if p.starts_with("/") {
+            p = p[1..].to_string();
+        }
+        let base = current_dir().expect("Could not find root").join(&p);
+        if let Some(exists) = doclist.iter().find(|f| base.join(f).is_file()) {
+            return Some(path.to_owned() + std::path::MAIN_SEPARATOR_STR + exists);
+        }
+    }
+    None
+}
+
+fn translate_path(line: &str, default_documents: &Option<Vec<String>>) -> Result<RequestInfo, Error> {
     use normpath::PathExt;
     use glob::glob;
 
@@ -155,6 +169,13 @@ fn translate_path(line: &str) -> Result<RequestInfo, Error> {
         // Remove verb + HTTP version
         let mut path = String::from(&line[GET_VERB.len()..]);
         path.truncate(path.len() - HTTP_VER.len());
+        let mut path = path.trim().to_owned();
+
+        if path.ends_with("/") {
+            if let Some(file) = map_to_default_document(&mut path, default_documents) {
+                path = file;
+            }
+        }
 
         // Format into a URL, so we can use parsing from std lib.
         // This also seems to prevent basic path traversel attempts.
@@ -282,7 +303,7 @@ mod tests {
         
         let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
 
-        handle_response(&mut veq);
+        handle_response(&mut veq, &None);
 
         // parse out the response headers, etc
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
@@ -309,7 +330,7 @@ mod tests {
     fn can_use_globs_to_match_to_filename() {
         let mut veq = VecDeque::from(b"GET /readme HTTP/1.1".to_owned());
 
-        handle_response(&mut veq);
+        handle_response(&mut veq, &None);
         
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         
@@ -321,7 +342,7 @@ mod tests {
         // We want to be deterministic if we also allow globbing
         let mut veq = VecDeque::from(b"GET /Cargo HTTP/1.1".to_owned());
 
-        handle_response(&mut veq);
+        handle_response(&mut veq, &None);
         
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         
@@ -332,7 +353,7 @@ mod tests {
     fn returns_expected_405_method_not_allowed() {
         let mut veq = VecDeque::from(b"PUT /readme.md HTTP/1.1".to_owned());
 
-        handle_response(&mut veq);
+        handle_response(&mut veq, &None);
 
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         assert!(response.starts_with("HTTP/1.1 405"));
@@ -342,7 +363,7 @@ mod tests {
     fn returns_expected_404_not_found() {
         let mut veq = VecDeque::from(b"GET /some_file_not_here HTTP/1.1".to_owned());
 
-        handle_response(&mut veq);
+        handle_response(&mut veq, &None);
 
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         assert!(response.starts_with("HTTP/1.1 404"));
@@ -354,9 +375,21 @@ mod tests {
     #[test_case("..%c0%affoo"; "Encoded 2nd")]
     fn handles_path_traversel_attempts(str: &str) {
         let request_header = format!("GET {} HTTP/1.1", str);
-        match translate_path(&request_header) {
+        match translate_path(&request_header, &None) {
             Ok(..) => panic!("Request path should not parse"),
             Err(..) => () // These paths should all fail to translate
         };
+    }
+
+    #[test]
+    fn can_map_to_default_document() {
+        let mut veq = VecDeque::from(b"GET / HTTP/1.1".to_owned());
+        let default_docs = Some(vec!["readme.md".to_string()]);
+        
+        handle_response(&mut veq, &default_docs);
+
+        let response = String::from_utf8(veq.into()).expect("Failed to read response");
+
+        assert!(response.starts_with("HTTP/1.1 200"));
     }
 }

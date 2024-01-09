@@ -128,7 +128,7 @@ fn main() {
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {
             print_server_addr(&listener, protocol);
-            run_server(listener, &tls_acceptor);
+            run_server(listener, &tls_acceptor, args.default_documents);
         },
         Err(err) => {
             log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));
