@@ -66,8 +66,6 @@ fn main() {
         None => false
     };
 
-    println!("{:?}", args.mime_types);
-
     let mut tls_acceptor: Option<Arc<TlsAcceptor>> = None;
     let mut cert_data = vec![];
 
