@@ -9,7 +9,7 @@ use phf::phf_map;
 use crate::log::{LogCategory, log};
 
 #[derive(Debug, PartialEq)]
-pub enum Error {
+enum Error {
     UnsupportedMethod,
     PathParsingFailed,
     PathMustBeFile,
