@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use native_tls::{TlsAcceptor, HandshakeError};
 use phf::phf_map;
+use thiserror::Error;
 use crate::log::{LogCategory, log};
 
 const GET_VERB: &str = "GET ";
@@ -26,11 +27,17 @@ impl ServerConfiguration {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Error, Debug)]
 enum Error {
+    #[error("Unsupported method")]
     UnsupportedMethod,
+    #[error("Failed to parse path (io)")]
+    IOFailed(#[from] std::io::Error),
+    #[error("Failed to parse path")]
     PathParsingFailed,
+    #[error("Path must be a file")]
     PathMustBeFile,
+    #[error("Failed to read path")]
     PathMetadataFailed,
 }
 
@@ -134,6 +141,7 @@ fn handle_response(mut stream: impl Read + Write, conf: &ServerConfiguration) {
                 handle_http_error(&mut writer, 405, "Method Not Allowed");
                 String::from("405 Method Not Allowed")
             }
+            // todo: handle all cases here?
             Err(err) => {
                 log(LogCategory::Info, &format!("Error: {:?}", err));
                 handle_http_error(&mut writer, 404, "Not Found");
@@ -228,7 +236,7 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
                 // Check if we have a default doc to return instead
                 match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
                     Some(p) => {
-                        file_size = p.metadata().expect("File metadata failed").len();
+                        file_size = p.metadata()?.len();
                         file_path = p;
                         Ok(())
                     },
