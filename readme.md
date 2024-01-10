@@ -5,9 +5,6 @@ nodes [http-server](https://www.npmjs.com/package/http-server).
 
 Tested on Windows only for now.
 
-- Implicit filetypes
-- Default document (index.htm, index.html, etc)
-- Improve logging
 - Cross-platform handling
 - Configuring mime-types?
 - Threading/pools?
@@ -39,7 +36,7 @@ Tested on Windows only for now.
 
 ## Examples:
 
-	C:\temp>servefolder
+    C:\temp>servefolder
     14:32:44.624 [INF] Serving "C:\temp" @ http://localhost:8080
 
 ## Notes
