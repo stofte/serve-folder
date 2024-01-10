@@ -39,11 +39,11 @@ struct Args {
     #[arg(short('t'), long)]
     certificate_thumbprint: Option<String>,
 
-    /// Default documents list. Specify option multiple times for each value in order of priority.
+    /// Default documents list. Specify option multiple times for each value in order of priority
     #[arg(short('d'), long, default_values = vec!["index.html"])]
     default_documents: Option<Vec<String>>,
 
-    /// Web root directory. Defaults to the current directory if not set.
+    /// Web root directory. Defaults to the current directory if not set
     wwwroot: Option<PathBuf>,
 }
 
