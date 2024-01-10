@@ -64,7 +64,7 @@ fn handle_response(mut stream: impl Read + Write, default_documents: &Option<Vec
                     let lines = [
                         "HTTP/1.1 200 OK",
                         "Cache-Control: no-store",
-                        &format!("Content-Type: {}", get_mimetype(&path)),
+                        &format!("Content-Type: {}", &request_info.mime_type),
                         &format!("Content-Length: {}\r\n\r\n", &request_info.file_size),
                     ].join("\r\n");
 
@@ -133,16 +133,18 @@ struct RequestInfo {
     method: String,
     path: String,
     file_path: PathBuf,
-    file_size: u64
+    file_size: u64,
+    mime_type: String
 }
 
 impl RequestInfo {
-    fn new(method: String, path: String, file_path: PathBuf, file_size: u64) -> RequestInfo {
+    fn new(method: String, path: String, file_path: PathBuf, file_size: u64, mime_type: String) -> RequestInfo {
         RequestInfo {
             method: method,
             path: path,
             file_path,
-            file_size: file_size
+            file_size: file_size,
+            mime_type: mime_type
         }
     }
 }
@@ -277,10 +279,9 @@ fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Resul
         }
     }?;
 
+    let mime = get_mimetype(&file_path).to_string();
 
-    println!("{:?}", file_path);
-
-    return Ok(RequestInfo::new("GET".to_string(), path.to_string(), file_path, file_size));
+    return Ok(RequestInfo::new("GET".to_string(), path.to_string(), file_path, file_size, mime));
 
 }
 
