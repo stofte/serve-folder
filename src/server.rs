@@ -2,7 +2,7 @@ use std::env::current_dir;
 use std::io::{BufReader, BufWriter, Read, Write, BufRead};
 use std::fs::File;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use native_tls::{TlsAcceptor, HandshakeError};
 use phf::phf_map;
@@ -53,9 +53,9 @@ fn handle_response(mut stream: impl Read + Write, default_documents: &Option<Vec
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         let mut writer = BufWriter::new(stream);
-        let response_status = match translate_path(&line, default_documents) {
+        let response_status = match process_request(&line, default_documents) {
             Ok(request_info) => {
-                let path = request_info.mapped_path;
+                let path = request_info.file_path;
                 let f_wrapped = File::open(&path);
                 if f_wrapped.is_ok() {
                     // File could be opened
@@ -73,7 +73,7 @@ fn handle_response(mut stream: impl Read + Write, default_documents: &Option<Vec
                     if writer.write_all(lines.as_bytes()).is_ok() {
                         // All headers written, try to write file
                         if std::io::copy(&mut br, &mut writer).is_ok() {
-                            format!("{} ({} bytes)", &path, request_info.file_size)
+                            format!("{} ({} bytes)", &path.to_string_lossy(), request_info.file_size)
                         } else {
                             let status = format!("Failed to write contents to response");
                             log(LogCategory::Warning, &status);
@@ -132,129 +132,156 @@ const HTTP_VER: &str = " HTTP/1.1";
 struct RequestInfo {
     method: String,
     path: String,
-    mapped_path: String,
+    file_path: PathBuf,
     file_size: u64
 }
 
 impl RequestInfo {
-    fn new(method: String, path: String, mapped_path: String, file_size: u64) -> RequestInfo {
+    fn new(method: String, path: String, file_path: PathBuf, file_size: u64) -> RequestInfo {
         RequestInfo {
             method: method,
             path: path,
-            mapped_path: mapped_path,
+            file_path,
             file_size: file_size
         }
     }
 }
 
-fn map_to_default_document(path: &str, default_documents: &Option<Vec<String>>) -> Option<String> {
+fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>) -> Option<PathBuf> {
     if let Some(doclist) = default_documents {
-        let mut p = path.to_string();
-        if p.starts_with("/") {
-            p = p[1..].to_string();
-        }
-        let base = current_dir().expect("Could not find root").join(&p);
+        let base = current_dir().expect("Could not find root").join(&path);
         if let Some(exists) = doclist.iter().find(|f| base.join(f).is_file()) {
-            return Some(path.to_owned() + std::path::MAIN_SEPARATOR_STR + exists);
+            return Some(path.to_owned().join(exists));
         }
     }
     None
 }
 
-fn translate_path(line: &str, default_documents: &Option<Vec<String>>) -> Result<RequestInfo, Error> {
+fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Result<RequestInfo, Error> {
+    use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
     use glob::glob;
 
-    if line.starts_with(GET_VERB) && line.ends_with(HTTP_VER) {
-        // Remove verb + HTTP version
-        let mut path = String::from(&line[GET_VERB.len()..]);
-        path.truncate(path.len() - HTTP_VER.len());
-        let mut path = path.trim().to_owned();
+    if !line.starts_with(GET_VERB) || !line.ends_with(HTTP_VER) {
+        println!("translate_path2: LINE: {}", line);
+        return Err(Error::UnsupportedMethod);
+    }
 
-        if path.ends_with("/") {
-            if let Some(file) = map_to_default_document(&mut path, default_documents) {
-                path = file;
+    // Remove verb + HTTP version
+    let line_end = line.len() - HTTP_VER.len();
+    let path = line[GET_VERB.len()..line_end].to_string();
+    
+    // File path mapping algorithm:
+    // Following steps are always taken:
+    // - Validate the path starts with "/"
+    // - Normalizing path by passing it through rusts Url::parse()
+    // - Read the url.path() component, stripping the initial "/"
+    // - Transform to a fs path, by constructing it via "current_dir\.\path_from_url"
+    // We can now determine what file to return:
+    // - If we have a file we are done, else
+    // - If the path is a folder, check if any default docs exists at "path\default_doc", else
+    // - If the path does not exist, check if any exists at "path.*"
+    // - Return not found
+
+    if !path.starts_with("/") {
+        return Err(Error::PathParsingFailed);
+    }
+    
+    let parse_url = String::from("http://localhost") + &path;
+    let cur_dir = current_dir().expect("no current_dir");
+    let fs_path = match url::Url::parse(&parse_url) {
+        Ok(url) => {
+            let mut url_path = url.path().replace("/", MAIN_SEPARATOR_STR);
+            // rust's fs code gets confused if we join a "\", as this
+            // will just change the directory to root, eg "C:\"
+            url_path = url_path[1..].to_owned();
+            let path_buf = Path::new(&cur_dir)
+                .join(url_path)
+                .normalize_virtually(); // This does not hit the fs, which is what we want
+            match path_buf {
+                Ok(v) => Ok(v),
+                Err(..) => Err(Error::PathParsingFailed)
+            }
+        },
+        Err(_) => Err(Error::PathParsingFailed)
+    }?;
+    
+    let mut file_size = 0;
+    let mut file_path = fs_path.into_path_buf();
+
+    match std::fs::metadata(&file_path) {
+        Ok(metadata) => {
+            if metadata.is_file() {
+                // All is good, direct file hit
+                file_size = metadata.len();
+                Ok(())
+            } else if metadata.is_dir() {
+                // Check if we have a default doc to return instead
+                match map_to_default_document(&file_path, default_documents) {
+                    Some(p) => {
+                        file_size = p.metadata().expect("File metadata failed").len();
+                        file_path = p;
+                        Ok(())
+                    },
+                    None => {
+                        log(LogCategory::Info, "Path is directory");
+                        Err(Error::PathMustBeFile)
+                    }
+                }
+            } else {
+                log(LogCategory::Info, "Path not handled");
+                Err(Error::PathMustBeFile)
+            }
+        },
+        Err(err) => {
+            // Nothing was found, see if a glob can find the file regardle
+            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))
+                .expect("Failed to glob pattern");
+            
+            let glob_match_ok = match matches.next() {
+                Some(file) => {
+                    match file {
+                        Ok(p) => {
+                            match std::fs::metadata(p.clone()) {
+                                Ok(metadata) => {
+                                    if metadata.is_file() {
+                                        file_size = metadata.len();
+                                        file_path = p;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                },
+                                Err(..) => false
+                            }
+                        },
+                        Err(..) => false
+                    }
+                },
+                None => false
+            };
+
+            // We only want one match
+            let single_match = glob_match_ok && matches.next().is_none();
+            if single_match {
+                // One matched file
+                Ok(())
+            } else if glob_match_ok {
+                // We must have had multiple matches
+                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err));
+                Err(Error::PathMustBeFile)
+            } else {
+                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err));
+                Err(Error::PathMetadataFailed)
             }
         }
+    }?;
 
-        // Format into a URL, so we can use parsing from std lib.
-        // This also seems to prevent basic path traversel attempts.
-        let dummyurl = String::from("http://localhost/") + &path;
-        let cur_dir = current_dir().expect("no current_dir");
 
-        let mapped_path = match url::Url::parse(&dummyurl) {
-            Ok(url) => {
-                let path_buf = std::path::Path::new(&cur_dir)
-                    .join(".".to_owned() + std::path::MAIN_SEPARATOR_STR)
-                    .join(".".to_owned() + &url.path().replace("/", "\\"))
-                    .normalize_virtually();
-                match path_buf {
-                    Ok(v) => Ok(v),
-                    Err(..) => Err(Error::PathParsingFailed)
-                }
-            },
-            Err(_) => Err(Error::PathParsingFailed)
-        }?;
+    println!("{:?}", file_path);
 
-        let mut mapped_path = String::from(mapped_path.as_path().to_string_lossy());
+    return Ok(RequestInfo::new("GET".to_string(), path.to_string(), file_path, file_size));
 
-        let method = String::from("GET");
-        let mut file_size = 0;
-
-        match std::fs::metadata(&mapped_path) {
-            Ok(metadata) => {
-                if metadata.is_file() {
-                    file_size = metadata.len();
-                    Ok(())
-                } else {
-                    log(LogCategory::Info, &format!(
-                        "Path is not a file. is_dir={}, is_symlink={}",
-                        metadata.is_dir(),
-                        metadata.is_symlink()
-                    ));
-                    Err(Error::PathMustBeFile)
-                }
-            },
-            Err(err) => {
-                // see if we can find it using globbing?
-                let mut matches = glob(&format!("{}.*", mapped_path))
-                    .expect("Failed to glob pattern");
-                
-                let glob_match_ok = match matches.next() {
-                    Some(file) => {
-                        match file {
-                            Ok(p) => {
-                                match std::fs::metadata(&p) {
-                                    Ok(metadata) => {
-                                        if metadata.is_file() {
-                                            file_size = metadata.len();
-                                            mapped_path = String::from(p.to_string_lossy());
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    },
-                                    Err(..) => false
-                                }
-                            },
-                            Err(..) => false
-                        }
-                    },
-                    None => false
-                };
-                let single_match = glob_match_ok && matches.next().is_none();
-                if single_match {
-                    Ok(())
-                } else {
-                    log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", mapped_path, err));
-                    Err(Error::PathMetadataFailed)
-                }
-            }
-        }?;
-
-        return Ok(RequestInfo::new(method, path, mapped_path, file_size));
-    }
-    Err(Error::UnsupportedMethod)
 }
 
 static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
@@ -269,9 +296,8 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "xml" => "application/xml"
 };
 
-fn get_mimetype(path: &str) -> &str {
-    let p: PathBuf = path.into();
-    match p.extension() {
+fn get_mimetype(path: &PathBuf) -> &str {
+    match path.extension() {
         Some(val) => {
             let ext = val.to_string_lossy().to_string().to_lowercase();
             match MIMETYPES.get(&ext) {
@@ -375,16 +401,19 @@ mod tests {
     #[test_case("..%c0%affoo"; "Encoded 2nd")]
     fn handles_path_traversel_attempts(str: &str) {
         let request_header = format!("GET {} HTTP/1.1", str);
-        match translate_path(&request_header, &None) {
+        match process_request(&request_header, &None) {
             Ok(..) => panic!("Request path should not parse"),
             Err(..) => () // These paths should all fail to translate
         };
     }
 
-    #[test]
-    fn can_map_to_default_document() {
-        let mut veq = VecDeque::from(b"GET / HTTP/1.1".to_owned());
-        let default_docs = Some(vec!["readme.md".to_string()]);
+    #[test_case("/", "readme.md"; "root")]
+    #[test_case("/src/", "main.rs"; "sub folder with slash")]
+    #[test_case("/src", "main.rs"; "sub folder no slash")]
+    fn can_map_to_default_document(path: &str, default_doc: &str) {
+        let req = format!("GET {path} HTTP/1.1");
+        let mut veq = VecDeque::from(req.as_bytes().to_owned());
+        let default_docs = Some(vec![default_doc.to_string()]);
         
         handle_response(&mut veq, &default_docs);
 
