@@ -15,6 +15,8 @@ use native::load_system_certificate;
 use server::run_server;
 use log::{LogCategory, log};
 
+use crate::server::ServerConfiguration;
+
 const DEFAULT_OPTIONS_BIND_VALUE: &str = "0.0.0.0";
 
 #[derive(Parser, Debug)]
@@ -63,6 +65,8 @@ fn main() {
         },
         None => false
     };
+
+    println!("{:?}", args.mime_types);
 
     let mut tls_acceptor: Option<Arc<TlsAcceptor>> = None;
     let mut cert_data = vec![];
@@ -118,10 +122,12 @@ fn main() {
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
 
+    let conf = ServerConfiguration::new(args.default_documents, args.mime_types);
+
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {
             print_server_addr(&listener, protocol);
-            run_server(listener, &tls_acceptor, args.default_documents);
+            run_server(listener, &tls_acceptor, conf);
         },
         Err(err) => {
             log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));

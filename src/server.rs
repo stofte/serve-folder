@@ -11,6 +11,20 @@ use crate::log::{LogCategory, log};
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
 
+pub struct ServerConfiguration {
+    default_documents: Option<Vec<String>>,
+    mime_types: Option<Vec<(String, String)>>,
+}
+
+impl ServerConfiguration {
+    pub fn new(default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>) -> ServerConfiguration {
+        ServerConfiguration {
+            default_documents,
+            mime_types,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum Error {
     UnsupportedMethod,
@@ -39,19 +53,19 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "xml" => "application/xml"
 };
 
-pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, default_documents: Option<Vec<String>>) {
+pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
     for stream in listener.incoming() {
-        handle_connection(stream, &tls_acceptor, &default_documents);
+        handle_connection(stream, &tls_acceptor, &conf);
     }
 }
 
-fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>, default_documents: &Option<Vec<String>>) {
+fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: &ServerConfiguration) {
     match stream {
         Ok(stream) => {
             match &tls_acceptor {
                 Some(acceptor) => {
                     match acceptor.accept(stream) {
-                        Ok(stream) => handle_response(stream, default_documents),
+                        Ok(stream) => handle_response(stream, &conf),
                         Err(e) => {
                             match &e {
                                 HandshakeError::Failure(ee) => {
@@ -64,7 +78,7 @@ fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acce
                     }
                 },
                 None => {
-                    handle_response(stream, default_documents);
+                    handle_response(stream, &conf);
                 }
             }
         }
@@ -72,11 +86,11 @@ fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acce
     }
 }
 
-fn handle_response(mut stream: impl Read + Write, default_documents: &Option<Vec<String>>) {
+fn handle_response(mut stream: impl Read + Write, conf: &ServerConfiguration) {
     let buf_reader = BufReader::new(&mut stream);
     if let Some(Ok(line)) = buf_reader.lines().nth(0) {
         let mut writer = BufWriter::new(stream);
-        let response_status = match process_request(&line, default_documents) {
+        let response_status = match process_request(&line, conf) {
             Ok(request_info) => {
                 let path = request_info.file_path;
                 let f_wrapped = File::open(&path);
@@ -149,7 +163,7 @@ fn handle_http_error(writer: &mut BufWriter<impl Write>, code: u32, body: &str) 
     writer.write_all(lines.as_bytes()).expect("Could not write");
 }
 
-fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Result<RequestInfo, Error> {
+fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo, Error> {
     use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
     use glob::glob;
@@ -208,7 +222,7 @@ fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Resul
                 Ok(())
             } else if metadata.is_dir() {
                 // Check if we have a default doc to return instead
-                match map_to_default_document(&file_path, default_documents) {
+                match map_to_default_document(&file_path, &conf.default_documents) {
                     Some(p) => {
                         file_size = p.metadata().expect("File metadata failed").len();
                         file_path = p;
@@ -318,9 +332,10 @@ mod tests {
         // 2. mimetype is as expected (here, text/plain)
         // 3. content-length is as expected
         
+        let conf = ServerConfiguration::new(None, None);
         let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
 
-        handle_response(&mut veq, &None);
+        handle_response(&mut veq, &conf);
 
         // parse out the response headers, etc
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
@@ -345,9 +360,10 @@ mod tests {
 
     #[test]
     fn can_use_globs_to_match_to_filename() {
+        let conf = ServerConfiguration::new(None, None);
         let mut veq = VecDeque::from(b"GET /readme HTTP/1.1".to_owned());
 
-        handle_response(&mut veq, &None);
+        handle_response(&mut veq, &conf);
         
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         
@@ -357,9 +373,11 @@ mod tests {
     #[test]
     fn can_not_use_globs_if_multiple_matched_files() {
         // We want to be deterministic if we also allow globbing
+
+        let conf = ServerConfiguration::new(None, None);
         let mut veq = VecDeque::from(b"GET /Cargo HTTP/1.1".to_owned());
 
-        handle_response(&mut veq, &None);
+        handle_response(&mut veq, &conf);
         
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         
@@ -368,9 +386,10 @@ mod tests {
 
     #[test]
     fn returns_expected_405_method_not_allowed() {
+        let conf = ServerConfiguration::new(None, None);
         let mut veq = VecDeque::from(b"PUT /readme.md HTTP/1.1".to_owned());
 
-        handle_response(&mut veq, &None);
+        handle_response(&mut veq, &conf);
 
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         assert!(response.starts_with("HTTP/1.1 405"));
@@ -378,9 +397,10 @@ mod tests {
 
     #[test]
     fn returns_expected_404_not_found() {
+        let conf = ServerConfiguration::new(None, None);
         let mut veq = VecDeque::from(b"GET /some_file_not_here HTTP/1.1".to_owned());
 
-        handle_response(&mut veq, &None);
+        handle_response(&mut veq, &conf);
 
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
         assert!(response.starts_with("HTTP/1.1 404"));
@@ -391,8 +411,9 @@ mod tests {
     #[test_case("%2e%2e%2ffoo"; "Encoded")]
     #[test_case("..%c0%affoo"; "Encoded 2nd")]
     fn handles_path_traversel_attempts(str: &str) {
+        let conf = ServerConfiguration::new(None, None);
         let request_header = format!("GET {} HTTP/1.1", str);
-        match process_request(&request_header, &None) {
+        match process_request(&request_header, &conf) {
             Ok(..) => panic!("Request path should not parse"),
             Err(..) => () // These paths should all fail to translate
         };
@@ -405,8 +426,9 @@ mod tests {
         let req = format!("GET {path} HTTP/1.1");
         let mut veq = VecDeque::from(req.as_bytes().to_owned());
         let default_docs = Some(vec![default_doc.to_string()]);
+        let conf = ServerConfiguration::new(default_docs, None);
         
-        handle_response(&mut veq, &default_docs);
+        handle_response(&mut veq, &conf);
 
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
 
