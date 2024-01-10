@@ -8,6 +8,9 @@ use native_tls::{TlsAcceptor, HandshakeError};
 use phf::phf_map;
 use crate::log::{LogCategory, log};
 
+const GET_VERB: &str = "GET ";
+const HTTP_VER: &str = " HTTP/1.1";
+
 #[derive(Debug, PartialEq)]
 enum Error {
     UnsupportedMethod,
@@ -15,6 +18,26 @@ enum Error {
     PathMustBeFile,
     PathMetadataFailed,
 }
+
+struct RequestInfo {
+    method: String,
+    path: String,
+    file_path: PathBuf,
+    file_size: u64,
+    mime_type: String
+}
+
+static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
+    "html" => "text/html",
+    "css" => "text/css",
+    "js" => "application/javascript",
+    "svg" => "image/svg+xml",
+    "woff2" => "font/woff2",
+    "ico" => "image/x-icon",
+    "png" => "image/png",
+    "gif" => "image/gif",
+    "xml" => "application/xml"
+};
 
 pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, default_documents: Option<Vec<String>>) {
     for stream in listener.incoming() {
@@ -124,39 +147,6 @@ fn handle_http_error(writer: &mut BufWriter<impl Write>, code: u32, body: &str) 
     ].join("\r\n");
 
     writer.write_all(lines.as_bytes()).expect("Could not write");
-}
-
-const GET_VERB: &str = "GET ";
-const HTTP_VER: &str = " HTTP/1.1";
-
-struct RequestInfo {
-    method: String,
-    path: String,
-    file_path: PathBuf,
-    file_size: u64,
-    mime_type: String
-}
-
-impl RequestInfo {
-    fn new(method: String, path: String, file_path: PathBuf, file_size: u64, mime_type: String) -> RequestInfo {
-        RequestInfo {
-            method: method,
-            path: path,
-            file_path,
-            file_size: file_size,
-            mime_type: mime_type
-        }
-    }
-}
-
-fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>) -> Option<PathBuf> {
-    if let Some(doclist) = default_documents {
-        let base = current_dir().expect("Could not find root").join(&path);
-        if let Some(exists) = doclist.iter().find(|f| base.join(f).is_file()) {
-            return Some(path.to_owned().join(exists));
-        }
-    }
-    None
 }
 
 fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Result<RequestInfo, Error> {
@@ -279,23 +269,24 @@ fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Resul
         }
     }?;
 
-    let mime = get_mimetype(&file_path).to_string();
-
-    return Ok(RequestInfo::new("GET".to_string(), path.to_string(), file_path, file_size, mime));
-
+    Ok(RequestInfo {
+        method: "GET".to_string(),
+        path: path.to_string(),
+        mime_type: get_mimetype(&file_path).to_string(),
+        file_size: file_size,
+        file_path: file_path,
+    })
 }
 
-static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
-    "html" => "text/html",
-    "css" => "text/css",
-    "js" => "application/javascript",
-    "svg" => "image/svg+xml",
-    "woff2" => "font/woff2",
-    "ico" => "image/x-icon",
-    "png" => "image/png",
-    "gif" => "image/gif",
-    "xml" => "application/xml"
-};
+fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>) -> Option<PathBuf> {
+    if let Some(doclist) = default_documents {
+        let base = current_dir().expect("Could not find root").join(&path);
+        if let Some(exists) = doclist.iter().find(|f| base.join(f).is_file()) {
+            return Some(path.to_owned().join(exists));
+        }
+    }
+    None
+}
 
 fn get_mimetype(path: &PathBuf) -> &str {
     match path.extension() {
