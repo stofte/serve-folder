@@ -4,13 +4,14 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::fs::File;
 use std::sync::Arc;
+use std::error::Error;
 use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
 
 pub mod native;
 pub mod server;
 pub mod log;
-use native::{load_system_certificate, Error};
+use native::load_system_certificate;
 use server::run_server;
 use log::{LogCategory, log};
 
@@ -42,6 +43,10 @@ struct Args {
     /// Default documents list. Specify option multiple times for each value in order of priority
     #[arg(short('d'), long, default_values = vec!["index.html"])]
     default_documents: Option<Vec<String>>,
+
+    /// Configure/override mime-types for file extensions
+    #[arg(short('m'), long, value_parser = parse_key_val::<String, String>)]
+    mime_types: Option<Vec<(String, String)>>,
 
     /// Web root directory. Defaults to the current directory if not set
     wwwroot: Option<PathBuf>,
@@ -84,10 +89,10 @@ fn main() {
             Ok(pfx_bin) => cert_data = pfx_bin,
             Err(err) => {
                 let msg = match err {
-                    Error::ThumbprintLength => { "Thumbprint error: SHA1 thumbprint with 40 characters expected".to_string() },
-                    Error::ThumbprintEncoding(msg) => { format!("Thumbprint error: {}", msg) },
-                    Error::FindCertificate => { format!("Could not find certificate: {}", cert_thumbprint) },
-                    Error::CertificateOperation(msg) => { format!("Certificate operation failed: {}", msg) },
+                    native::Error::ThumbprintLength => { "Thumbprint error: SHA1 thumbprint with 40 characters expected".to_string() },
+                    native::Error::ThumbprintEncoding(msg) => { format!("Thumbprint error: {}", msg) },
+                    native::Error::FindCertificate => { format!("Could not find certificate: {}", cert_thumbprint) },
+                    native::Error::CertificateOperation(msg) => { format!("Certificate operation failed: {}", msg) },
                 };
                 log(LogCategory::Error, &msg);
                 return;
@@ -134,4 +139,19 @@ fn main() {
             log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));
         }
     }
+}
+
+// Used to parse key values in arguments
+// See https://docs.rs/clap/latest/clap/_derive/_cookbook/typed_derive/index.html
+fn parse_key_val<T, U>(s: &str) -> Result<(T, U), Box<dyn Error + Send + Sync + 'static>>
+where
+    T: std::str::FromStr,
+    T::Err: Error + Send + Sync + 'static,
+    U: std::str::FromStr,
+    U::Err: Error + Send + Sync + 'static,
+{
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{s}`"))?;
+    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
 }
