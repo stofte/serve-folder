@@ -6,7 +6,6 @@ nodes [http-server](https://www.npmjs.com/package/http-server).
 Tested on Windows only for now.
 
 - Cross-platform handling
-- Configuring mime-types?
 - Threading/pools?
 
 ## Usage
