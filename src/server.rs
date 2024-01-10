@@ -285,7 +285,7 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
     Ok(RequestInfo {
         method: "GET".to_string(),
         path: path.to_string(),
-        mime_type: get_mimetype(&file_path).to_string(),
+        mime_type: get_mimetype(&file_path, &conf.mime_types).to_string(),
         file_size: file_size,
         file_path: file_path,
     })
@@ -301,19 +301,32 @@ fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>)
     None
 }
 
-fn get_mimetype(path: &PathBuf) -> &str {
+fn get_mimetype(path: &PathBuf, mimetypes: &Option<Vec<(String, String)>>) -> String {
     match path.extension() {
         Some(val) => {
             let ext = val.to_string_lossy().to_string().to_lowercase();
-            match MIMETYPES.get(&ext) {
-                Some(mime) => mime,
-                None => {
-                    log(LogCategory::Warning, &format!("No mimetype for '{}'", ext));
-                    "text/plain"
+
+            let mut mt = "".to_string();
+
+            if let Some(mts) = mimetypes {
+                if let Some(mt_map) = mts.into_iter().find(|x| x.0 == ext) {
+                    mt = mt_map.1.clone();
                 }
             }
+
+            if mt.is_empty() {
+                match MIMETYPES.get(&ext) {
+                    Some(mime) => mime.to_string(),
+                    None => {
+                        log(LogCategory::Warning, &format!("No mimetype for '{}'", ext));
+                        "text/plain".to_string()
+                    }
+                }
+            } else {
+                mt
+            }
         }
-        None => "text/plain"
+        None => "text/plain".to_string()
     }
 }
 
@@ -342,10 +355,15 @@ mod tests {
         let mut res_lines = response.lines();
 
         let response_start_line = res_lines.next().expect("No lines");
+        let content_type_header = res_lines
+            .find(|l| l.starts_with("Content-Type")).expect("Could not find content-type header");
         let content_length_header = res_lines
             .find(|l| l.starts_with("Content-Length")).expect("Could not find content-length header");
+        let content_type = content_type_header.split(":")
+            .last().expect("Content-Type header invalid")
+            .trim();
         let content_length = content_length_header.split(":")
-            .last().expect("Incorrect header format")
+            .last().expect("Content-Length header invalid")
             .trim()
             .parse::<i32>().expect("Could not parse content-length as number");
 
@@ -356,6 +374,9 @@ mod tests {
 
         // check that our content-length matches the file itself
         assert_eq!(content_length as usize, file_length);
+
+        // Mime type should also be included
+        assert_eq!("text/plain", content_type);
     }
 
     #[test]
@@ -433,5 +454,27 @@ mod tests {
         let response = String::from_utf8(veq.into()).expect("Failed to read response");
 
         assert!(response.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
+    #[test_case("xml", "hej mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
+    fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
+        let req = format!("GET {path} HTTP/1.1");
+        let conf = ServerConfiguration::new(None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
+        let mut socket = VecDeque::from(req.as_bytes().to_owned());
+
+        handle_response(&mut socket, &conf);
+
+        let response = String::from_utf8(socket.into()).expect("Failed to read response");
+        let mut lines = response.lines();
+
+        let response_start_line = lines.next().expect("No lines");
+        let content_type_header = lines
+            .find(|l| l.starts_with("Content-Type")).expect("Content-Type header not found");
+
+        let content_type = content_type_header.split(":").last().expect("Content-Type header invalid").trim();
+
+        assert!(response_start_line.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(mime_type, content_type);
     }
 }
