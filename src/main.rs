@@ -110,21 +110,21 @@ fn main() {
             log(LogCategory::Warning, &format!(
                 "Failed to set \"{}\" as base directory. Using \"{}\" instead.", 
                 p.to_string_lossy(),
-                current_dir().unwrap().to_string_lossy()
+                get_current_dir().to_string_lossy()
             ));
         },
         None => ()
     };
 
-    
+    let wwwroot = get_current_dir();
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
 
-    let conf = ServerConfiguration::new(PathBuf::new(), args.default_documents, args.mime_types);
+    let conf = ServerConfiguration::new(wwwroot, args.default_documents, args.mime_types);
 
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {
-            print_server_addr(&listener, protocol);
+            print_server_addr(&listener, protocol, &conf.www_root);
             run_server(listener, &tls_acceptor, conf);
         },
         Err(err) => {
@@ -133,8 +133,7 @@ fn main() {
     }
 }
 
-fn print_server_addr(sock: &TcpListener, protocol: &str) {
-    let base_dir = current_dir().expect("Failed to get current dir");
+fn print_server_addr(sock: &TcpListener, protocol: &str, base_dir: &PathBuf) {
     let local_addr = sock.local_addr().unwrap();
     let mut local_str = local_addr.to_string();
     if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
@@ -158,4 +157,8 @@ where
         .find('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{s}`"))?;
     Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
+}
+
+fn get_current_dir() -> PathBuf {
+    current_dir().expect("Failed to read current directory")
 }

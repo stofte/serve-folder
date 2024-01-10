@@ -12,7 +12,7 @@ const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
 
 pub struct ServerConfiguration {
-    www_root: PathBuf,
+    pub www_root: PathBuf,
     default_documents: Option<Vec<String>>,
     mime_types: Option<Vec<(String, String)>>,
 }
