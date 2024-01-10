@@ -162,7 +162,9 @@ fn handle_http_error(writer: &mut BufWriter<impl Write>, code: u32, body: &str) 
         body
     ].join("\r\n");
 
-    writer.write_all(lines.as_bytes()).expect("Could not write");
+    writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
+        log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
+    });
 }
 
 fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo, Error> {
