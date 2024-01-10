@@ -33,6 +33,8 @@ enum Error {
     UnsupportedMethod,
     #[error("Failed to parse path (io)")]
     IOFailed(#[from] std::io::Error),
+    #[error("Failed to parse path (glob)")]
+    GlobFailed(#[from] glob::PatternError),
     #[error("Failed to parse path")]
     PathParsingFailed,
     #[error("Path must be a file")]
@@ -252,8 +254,7 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
         },
         Err(err) => {
             // Nothing was found, see if a glob can find the file regardle
-            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))
-                .expect("Failed to glob pattern");
+            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))?;
             
             let glob_match_ok = match matches.next() {
                 Some(file) => {
