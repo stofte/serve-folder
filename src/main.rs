@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::env::{current_dir, set_current_dir};
+use std::env::set_current_dir;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::fs::File;
@@ -159,6 +159,8 @@ where
     Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
 }
 
+/// Used to limit usage of current_dir
 fn get_current_dir() -> PathBuf {
+    use std::env::current_dir;
     current_dir().expect("Failed to read current directory")
 }

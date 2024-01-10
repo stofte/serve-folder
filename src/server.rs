@@ -1,4 +1,3 @@
-use std::env::current_dir;
 use std::io::{BufReader, BufWriter, Read, Write, BufRead};
 use std::fs::File;
 use std::net::TcpListener;
@@ -196,7 +195,7 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
     }
     
     let parse_url = String::from("http://localhost") + &path;
-    let cur_dir = current_dir().expect("no current_dir");
+    let cur_dir = &conf.www_root;
     let fs_path = match url::Url::parse(&parse_url) {
         Ok(url) => {
             let mut url_path = url.path().replace("/", MAIN_SEPARATOR_STR);
@@ -225,7 +224,7 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
                 Ok(())
             } else if metadata.is_dir() {
                 // Check if we have a default doc to return instead
-                match map_to_default_document(&file_path, &conf.default_documents) {
+                match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
                     Some(p) => {
                         file_size = p.metadata().expect("File metadata failed").len();
                         file_path = p;
@@ -294,9 +293,9 @@ fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestInfo
     })
 }
 
-fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>) -> Option<PathBuf> {
+fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>, www_root: &PathBuf) -> Option<PathBuf> {
     if let Some(doclist) = default_documents {
-        let base = current_dir().expect("Could not find root").join(&path);
+        let base = www_root.join(&path);
         if let Some(exists) = doclist.iter().find(|f| base.join(f).is_file()) {
             return Some(path.to_owned().join(exists));
         }
@@ -431,6 +430,7 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 404"));
     }
 
+    // todo: code now rejects paths without initial slashes
     #[test_case("../../../foo"; "Regular")]
     #[test_case("..\\..\\..\\foo"; "Regular 2nd")]
     #[test_case("%2e%2e%2ffoo"; "Encoded")]
@@ -448,10 +448,12 @@ mod tests {
     #[test_case("/src/", "main.rs"; "sub folder with slash")]
     #[test_case("/src", "main.rs"; "sub folder no slash")]
     fn can_map_to_default_document(path: &str, default_doc: &str) {
+        use std::env::current_dir;
+        
         let req = format!("GET {path} HTTP/1.1");
         let mut veq = VecDeque::from(req.as_bytes().to_owned());
         let default_docs = Some(vec![default_doc.to_owned()]);
-        let conf = ServerConfiguration::new(PathBuf::new(), default_docs, None);
+        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None);
         
         handle_response(&mut veq, &conf);
 
