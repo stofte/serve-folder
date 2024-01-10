@@ -52,18 +52,6 @@ struct Args {
     wwwroot: Option<PathBuf>,
 }
 
-fn print_server_addr(sock: &TcpListener, protocol: &str) {
-    let base_dir = current_dir().expect("Failed to get current dir");
-    let local_addr = sock.local_addr().unwrap();
-    let mut local_str = local_addr.to_string();
-    if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
-        // While we can bind to 0.0.0.0 to match all interfaces, this does not work when connecting,
-        // so for clickable links we replace the addr with localhost instead.
-        local_str = ["localhost".to_string(), local_addr.port().to_string()].join(":");
-    }
-    log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_str));
-}
-
 fn main() {
 
     let args = Args::parse();
@@ -139,6 +127,18 @@ fn main() {
             log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));
         }
     }
+}
+
+fn print_server_addr(sock: &TcpListener, protocol: &str) {
+    let base_dir = current_dir().expect("Failed to get current dir");
+    let local_addr = sock.local_addr().unwrap();
+    let mut local_str = local_addr.to_string();
+    if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
+        // While we can bind to 0.0.0.0 to match all interfaces, this does not work when connecting,
+        // so for clickable links we replace the addr with localhost instead.
+        local_str = ["localhost".to_string(), local_addr.port().to_string()].join(":");
+    }
+    log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_str));
 }
 
 // Used to parse key values in arguments
