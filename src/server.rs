@@ -155,7 +155,6 @@ fn process_request(line: &str, default_documents: &Option<Vec<String>>) -> Resul
     use glob::glob;
 
     if !line.starts_with(GET_VERB) || !line.ends_with(HTTP_VER) {
-        println!("translate_path2: LINE: {}", line);
         return Err(Error::UnsupportedMethod);
     }
 
