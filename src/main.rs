@@ -29,9 +29,9 @@ struct Args {
 
     /// Filepath for TLS certificate
     #[arg(short('f'), long)]
-    certificate_filename: Option<String>,
+    certificate_filepath: Option<String>,
 
-    /// Optional password for the above TLS certificate
+    /// Optional password for the TLS certificate file
     #[arg(short('w'), long)]
     certificate_password: Option<String>,
 
@@ -63,7 +63,7 @@ fn main() {
 
     let args = Args::parse();
 
-    let is_pfx_file = match &args.certificate_filename {
+    let is_pfx_file = match &args.certificate_filepath {
         Some(path) => match std::fs::metadata(&path) {
             Ok(metadata) => metadata.is_file(),
             Err(_) => false
@@ -77,7 +77,7 @@ fn main() {
     // Check if there's a certificate provided via a file or if we should
     // check the store for a certificate thumbprint instead.
     if is_pfx_file {
-        let mut file = File::open(args.certificate_filename.unwrap()).unwrap();
+        let mut file = File::open(args.certificate_filepath.unwrap()).unwrap();
         file.read_to_end(&mut cert_data).unwrap();
     } else if let Some(cert_thumbprint) = &args.certificate_thumbprint {
         match load_system_certificate(cert_thumbprint) {
