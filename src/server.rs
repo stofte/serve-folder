@@ -149,15 +149,16 @@ fn handle_http_error(writer: &mut BufWriter<impl Write>, code: u32, body: &str) 
         405 => "Method Not Allowed",
         _ => "Internal Server Error"
     };
-    let header = format!("HTTP/1.1 {} {}", code, status);
-    let content_type = "Content-Type: text/plain".to_string();
-    let content_length = format!("Content-Length: {}", body.len());
+    let header = &format!("HTTP/1.1 {} {}", code, status);
+    let content_type = "Content-Type: text/plain";
+    let content_length = &format!("Content-Length: {}", body.len());
 
-    let lines = [header,
+    let lines = [
+        header,
         content_type,
         content_length,
-        "".to_string(),
-        body.to_string()
+        "",
+        body
     ].join("\r\n");
 
     writer.write_all(lines.as_bytes()).expect("Could not write");
@@ -302,32 +303,33 @@ fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>)
 }
 
 fn get_mimetype(path: &PathBuf, mimetypes: &Option<Vec<(String, String)>>) -> String {
-    match path.extension() {
+    let mt = match path.extension() {
         Some(val) => {
-            let ext = val.to_string_lossy().to_string().to_lowercase();
+            let ext = val.to_string_lossy().to_lowercase();
 
-            let mut mt = "".to_string();
+            let mut mt = "";
 
             if let Some(mts) = mimetypes {
                 if let Some(mt_map) = mts.into_iter().find(|x| x.0 == ext) {
-                    mt = mt_map.1.clone();
+                    mt = &mt_map.1;
                 }
             }
 
             if mt.is_empty() {
                 match MIMETYPES.get(&ext) {
-                    Some(mime) => mime.to_string(),
+                    Some(mime) => mime,
                     None => {
                         log(LogCategory::Warning, &format!("No mimetype for '{}'", ext));
-                        "text/plain".to_string()
+                        "text/plain"
                     }
                 }
             } else {
                 mt
             }
         }
-        None => "text/plain".to_string()
-    }
+        None => "text/plain"
+    };
+    mt.to_owned()
 }
 
 #[cfg(test)]
@@ -446,7 +448,7 @@ mod tests {
     fn can_map_to_default_document(path: &str, default_doc: &str) {
         let req = format!("GET {path} HTTP/1.1");
         let mut veq = VecDeque::from(req.as_bytes().to_owned());
-        let default_docs = Some(vec![default_doc.to_string()]);
+        let default_docs = Some(vec![default_doc.to_owned()]);
         let conf = ServerConfiguration::new(default_docs, None);
         
         handle_response(&mut veq, &conf);
