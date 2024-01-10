@@ -120,7 +120,7 @@ fn main() {
     let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
 
-    let conf = ServerConfiguration::new(args.default_documents, args.mime_types);
+    let conf = ServerConfiguration::new(PathBuf::new(), args.default_documents, args.mime_types);
 
     match TcpListener::bind(&bind_addr) {
         Ok(listener) => {

@@ -12,13 +12,15 @@ const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
 
 pub struct ServerConfiguration {
+    www_root: PathBuf,
     default_documents: Option<Vec<String>>,
     mime_types: Option<Vec<(String, String)>>,
 }
 
 impl ServerConfiguration {
-    pub fn new(default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>) -> ServerConfiguration {
+    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>) -> ServerConfiguration {
         ServerConfiguration {
+            www_root,
             default_documents,
             mime_types,
         }
@@ -347,7 +349,7 @@ mod tests {
         // 2. mimetype is as expected (here, text/plain)
         // 3. content-length is as expected
         
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let mut veq = VecDeque::from(b"GET /readme.md HTTP/1.1".to_owned());
 
         handle_response(&mut veq, &conf);
@@ -383,7 +385,7 @@ mod tests {
 
     #[test]
     fn can_use_globs_to_match_to_filename() {
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let mut veq = VecDeque::from(b"GET /readme HTTP/1.1".to_owned());
 
         handle_response(&mut veq, &conf);
@@ -397,7 +399,7 @@ mod tests {
     fn can_not_use_globs_if_multiple_matched_files() {
         // We want to be deterministic if we also allow globbing
 
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let mut veq = VecDeque::from(b"GET /Cargo HTTP/1.1".to_owned());
 
         handle_response(&mut veq, &conf);
@@ -409,7 +411,7 @@ mod tests {
 
     #[test]
     fn returns_expected_405_method_not_allowed() {
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let mut veq = VecDeque::from(b"PUT /readme.md HTTP/1.1".to_owned());
 
         handle_response(&mut veq, &conf);
@@ -420,7 +422,7 @@ mod tests {
 
     #[test]
     fn returns_expected_404_not_found() {
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let mut veq = VecDeque::from(b"GET /some_file_not_here HTTP/1.1".to_owned());
 
         handle_response(&mut veq, &conf);
@@ -434,7 +436,7 @@ mod tests {
     #[test_case("%2e%2e%2ffoo"; "Encoded")]
     #[test_case("..%c0%affoo"; "Encoded 2nd")]
     fn handles_path_traversel_attempts(str: &str) {
-        let conf = ServerConfiguration::new(None, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
         let request_header = format!("GET {} HTTP/1.1", str);
         match process_request(&request_header, &conf) {
             Ok(..) => panic!("Request path should not parse"),
@@ -449,7 +451,7 @@ mod tests {
         let req = format!("GET {path} HTTP/1.1");
         let mut veq = VecDeque::from(req.as_bytes().to_owned());
         let default_docs = Some(vec![default_doc.to_owned()]);
-        let conf = ServerConfiguration::new(default_docs, None);
+        let conf = ServerConfiguration::new(PathBuf::new(), default_docs, None);
         
         handle_response(&mut veq, &conf);
 
@@ -462,7 +464,7 @@ mod tests {
     #[test_case("xml", "hej mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
         let req = format!("GET {path} HTTP/1.1");
-        let conf = ServerConfiguration::new(None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
+        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
         let mut socket = VecDeque::from(req.as_bytes().to_owned());
 
         handle_response(&mut socket, &conf);
