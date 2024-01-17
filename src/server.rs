@@ -65,34 +65,32 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
 
 pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
     for stream in listener.incoming() {
-        handle_connection(stream, &tls_acceptor, &conf);
+        match stream {
+            Ok(stream) => handle_connection(stream, &tls_acceptor, &conf),
+            Err(_) => () // connection failed?
+        }
     }
 }
 
-fn handle_connection(stream: Result<impl Read + Write, std::io::Error>, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: &ServerConfiguration) {
-    match stream {
-        Ok(stream) => {
-            match &tls_acceptor {
-                Some(acceptor) => {
-                    match acceptor.accept(stream) {
-                        Ok(stream) => handle_response(stream, &conf),
-                        Err(e) => {
-                            match &e {
-                                HandshakeError::Failure(ee) => {
-                                    // Likely because of self-signed not being in trusted roots
-                                    log(LogCategory::Error, &format!("{}", ee));
-                                },
-                                _ => ()
-                            }
-                        }
+fn handle_connection(stream: impl Read + Write, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: &ServerConfiguration) {
+    match &tls_acceptor {
+        Some(acceptor) => {
+            match acceptor.accept(stream) {
+                Ok(stream) => handle_response(stream, &conf),
+                Err(e) => {
+                    match &e {
+                        HandshakeError::Failure(ee) => {
+                            // Likely because of self-signed not being in trusted roots
+                            log(LogCategory::Error, &format!("{}", ee));
+                        },
+                        _ => ()
                     }
-                },
-                None => {
-                    handle_response(stream, &conf);
                 }
             }
+        },
+        None => {
+            handle_response(stream, &conf);
         }
-        Err(_) => { /* connection failed */ }
     }
 }
 
