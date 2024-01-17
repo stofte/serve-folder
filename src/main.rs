@@ -1,12 +1,12 @@
-use std::io::Read;
+use std::{io::Read, net::SocketAddr};
 use std::env::set_current_dir;
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::fs::File;
 use std::sync::Arc;
 use std::error::Error;
 use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
+use socket2::{Socket, TcpKeepalive, Domain, Type};
 
 pub mod native;
 pub mod server;
@@ -116,25 +116,42 @@ fn main() {
         None => ()
     };
 
-    let wwwroot = get_current_dir();
-    let bind_addr = [args.bind.clone(), args.port.to_string()].join(":");
-    let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
+    let addr_str = [args.bind.clone(), args.port.to_string()].join(":");
+    let addr = addr_str.parse::<SocketAddr>();
 
+    if addr.is_err() {
+        log(LogCategory::Error, &format!("Could not parse bind value {}. Exiting ...", addr_str));
+    }
+    let addr = addr.expect("Expected ok socket");
+
+    let wwwroot = get_current_dir();
+    let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
     let conf = ServerConfiguration::new(wwwroot, args.default_documents, args.mime_types);
 
-    match TcpListener::bind(&bind_addr) {
-        Ok(listener) => {
-            print_server_addr(&listener, protocol, &conf.www_root);
-            run_server(listener, &tls_acceptor, conf);
+    match bind_server_socket(addr) {
+        Ok(socket) => {
+            print_server_addr(&socket, protocol, &conf.www_root);
+            run_server(socket.into(), &tls_acceptor, conf);
         },
         Err(err) => {
-            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, bind_addr, err));
+            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
         }
     }
 }
 
-fn print_server_addr(sock: &TcpListener, protocol: &str, base_dir: &PathBuf) {
-    let local_addr = sock.local_addr().unwrap();
+fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {
+    use std::time::Duration;
+
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(4));
+    socket.set_tcp_keepalive(&keepalive)?;
+    socket.bind(&addr.into())?;
+    socket.listen(32)?;
+    Ok(socket)
+}
+
+fn print_server_addr(sock: &Socket, protocol: &str, base_dir: &PathBuf) {
+    let local_addr = sock.local_addr().unwrap().as_socket().unwrap();
     let mut local_str = local_addr.to_string();
     if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
         // While we can bind to 0.0.0.0 to match all interfaces, this does not work when connecting,
