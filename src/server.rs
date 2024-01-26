@@ -122,9 +122,15 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
                         // parsed full http request here
                         println!("{:?} received:\n{:?}", std::thread::current().id(), req);
                         // figure out what file to return
-                        let file_info = process_request2(&req, conf).unwrap();
-                        // send the response now
-                        handle_response2(&stream, &file_info, conf);
+                        match process_request2(&req, conf) {
+                            Ok(file_info) => {
+                                handle_response2(&stream, &file_info, conf);
+                            },
+                            Err(err) => {
+                                log(LogCategory::Info, &format!("Error: {:?}", err));
+                                handle_http_error(&stream, 404, "Not Found");
+                            }
+                        };
                         // TODO: if we did not receive "Connection: Keep-Alive", 
                         // we should also break here, and close down the connection
                         if req.connectionKeepAlive() {
