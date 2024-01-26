@@ -10,6 +10,7 @@ use socket2::{Socket, TcpKeepalive, Domain, Type};
 
 pub mod native;
 pub mod server;
+pub mod request;
 pub mod log;
 use native::load_system_certificate;
 use server::run_server;
@@ -145,6 +146,7 @@ fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
     let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(4));
     socket.set_tcp_keepalive(&keepalive)?;
+    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     socket.bind(&addr.into())?;
     socket.listen(32)?;
     Ok(socket)
