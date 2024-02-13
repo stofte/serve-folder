@@ -170,7 +170,7 @@ fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, c
     let f_wrapped = File::open(&path);
     if f_wrapped.is_ok() {
         // File could be opened
-        let f = f_wrapped.unwrap();
+        let f = f_wrapped.expect("File result failed");
         let mut br = BufReader::new(f);
         let lines = [
             "HTTP/1.1 200 OK",
@@ -673,6 +673,34 @@ struct Server {
     tls_acceptor: Option<Arc<TlsAcceptor>>,
 }
 
+fn handle_connection3(read: impl Read, mut write: impl Write, conf: ServerConfiguration) {
+    let mut reader = StreamReader::new(read, 1000);
+    loop {
+        match reader.next_request() {
+            Ok(request) => {
+                // todo handle the server response
+                match process_request3(&request, &conf) {
+                    Ok(file_info) => {
+                        handle_response3(&mut write, &file_info, &conf);
+                    },
+                    Err(err) => {
+                        log(LogCategory::Info, &format!("Error: {:?}", err));
+                        handle_http_error3(&mut write, 404, "Not Found");
+                    }
+                };
+
+            },
+            Err(_err) => {
+                // todo implement properly
+                write.write("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
+                // close connection by returning from function, causing
+                // the thread to exit and the connection to be dropped
+                break;
+            }
+        }
+    }
+}
+
 impl Server {
     pub fn new(conf: ServerConfiguration, address: SocketAddr, tls_acceptor: Option<Arc<TlsAcceptor>>) -> Server {
         Server {
@@ -685,47 +713,27 @@ impl Server {
         match self.tls_acceptor { Some(_) => "https".to_owned(), None => "http".to_owned() }
     }
     pub fn run(&self) {
-
-        let sock = bind_server_socket(self.address, 2000).unwrap();
-        let listener: TcpListener = sock.into();
+        match bind_server_socket(self.address, 2000) {
+            Ok(sock) => {
+                let listener: TcpListener = sock.into();
         
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let conf = self.conf.clone();
-                    thread::spawn(move || {
-                        let read_stream = stream.try_clone().unwrap();
-                        let mut write_stream = stream.try_clone().unwrap();
-                        let mut reader = StreamReader::new(read_stream, 1000);
-                        loop {
-                            match reader.next_request() {
-                                Ok(request) => {
-                                    // todo handle the server response
-                                    match process_request3(&request, &conf) {
-                                        Ok(file_info) => {
-                                            handle_response3(&mut write_stream, &file_info, &conf);
-                                        },
-                                        Err(err) => {
-                                            log(LogCategory::Info, &format!("Error: {:?}", err));
-                                            handle_http_error3(&mut write_stream, 404, "Not Found");
-                                        }
-                                    };
-
-                                },
-                                Err(_err) => {
-                                    // todo implement this
-                                    write_stream.write("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
-                                    // close connection on our end, both by calling shutdown, 
-                                    // to prevent issues on our end and also by dropping the streamreader
-                                    write_stream.shutdown(std::net::Shutdown::Both).unwrap();
-                                    break;
-                                }
-                            }
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(stream) => {
+                            let conf = self.conf.clone();
+                            let read_stream = stream.try_clone().unwrap();
+                            let write_stream = stream.try_clone().unwrap();
+                            thread::spawn(|| handle_connection3(read_stream, write_stream, conf));
+                        },
+                        Err(..) => {
+                            // todo log err
                         }
-                    });
-                },
-                Err(..) => ()
-            };
+                    };
+                }
+            },
+            Err(e) => {
+                // todo log err
+            }
         }
     }
 }
@@ -734,10 +742,34 @@ impl Server {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, fs, io::ErrorKind};
+    use test_case::test_case;
     use crate::test_data::{HTTP_REQ_GET_README_MD, HTTP_REQ_POST};
 
     fn wrap_inp_vec(vec: VecDeque<u8>) -> Arc<Mutex<VecDeque<u8>>> {
         Arc::new(Mutex::new(vec))
+    }
+
+    fn start_server(address: SocketAddr, conf: Option<ServerConfiguration>) {
+        let conf = match conf {
+            Some(c) => c,
+            None => ServerConfiguration::new(PathBuf::new(), None, None)
+        };
+        thread::spawn(move || {
+            let server = Server::new(conf, address, None);
+            server.run();
+        });
+    }
+
+    fn call_server_and_read_response(address: SocketAddr, request: String) -> String {
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            // should fetch the readme file of the project
+            stream.write(request.as_bytes()).unwrap();
+            let mut buf: [u8; 10000] = [0;10000];
+            let read_c = stream.read(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
+        });
+        client_handle.join().unwrap()
     }
 
     // These tests generally assume that the tests are run with project root as the current_dir.
@@ -866,42 +898,34 @@ mod tests {
     //     assert!(response.starts_with("HTTP/1.1 200"));
     // }
 
-    // #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
-    // #[test_case("xml", "hej mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
-    // fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
-    //     let req = format!("GET {path} HTTP/1.1");
-    //     let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
-    //     let mut socket = VecDeque::from(req.as_bytes().to_owned());
+    #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
+    //#[test_case("xml", "hej mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
+    fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
 
-    //     handle_response(&mut socket, &conf);
+        let address = "127.0.0.1:11082".parse::<SocketAddr>().unwrap();
+        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
+        start_server(address, Some(conf));
 
-    //     let response = String::from_utf8(socket.into()).expect("Failed to read response");
-    //     let mut lines = response.lines();
+        let req = format!("GET {path} HTTP/1.1\r\n\r\n");
+        let response = call_server_and_read_response(address, req);
 
-    //     let response_start_line = lines.next().expect("No lines");
-    //     let content_type_header = lines
-    //         .find(|l| l.starts_with("Content-Type")).expect("Content-Type header not found");
+        println!("{:?}", response);
 
-    //     let content_type = content_type_header.split(":").last().expect("Content-Type header invalid").trim();
+        let mut lines = response.lines();
 
-    //     assert!(response_start_line.starts_with("HTTP/1.1 200 OK"));
-    //     assert_eq!(mime_type, content_type);
-    // }
-    
-    fn start_server(address: SocketAddr, conf: Option<ServerConfiguration>) {
-        let conf = match conf {
-            Some(c) => c,
-            None => ServerConfiguration::new(PathBuf::new(), None, None)
-        };
-        thread::spawn(move || {
-            let server = Server::new(conf, address, None);
-            server.run();
-        });
+        let response_start_line = lines.next().expect("No lines");
+        let content_type_header = lines
+            .find(|l| l.starts_with("Content-Type")).expect("Content-Type header not found");
+
+        let content_type = content_type_header.split(":").last().expect("Content-Type header invalid").trim();
+
+        assert!(response_start_line.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(mime_type, content_type);
     }
 
     #[test]
     fn responds_to_get_request() {
-        let address = "127.0.0.1:11082".parse::<SocketAddr>().unwrap();
+        let address = "127.0.0.1:11083".parse::<SocketAddr>().unwrap();
         start_server(address, None);
         
         let client_handle = thread::spawn(move || {
@@ -946,7 +970,7 @@ mod tests {
     fn connection_is_closed_after_reading_unpported_method() {
         let address = "127.0.0.1:11081".parse::<SocketAddr>().unwrap();
         start_server(address, None);
-        
+
         let client_handle = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
 
