@@ -6,7 +6,7 @@ pub struct StreamReader<'a> {
     buffer_max: usize,
     buffer: Vec<u8>,
     stream_buffer: Vec<u8>,
-    stream: Box<BufReader<dyn Read + 'a>>,
+    stream: Box<dyn Read + 'a>,
     connected: bool,
 }
 
@@ -19,7 +19,7 @@ impl<'a> StreamReader<'a> {
             buffer: vec![],
             stream_buffer: vec![0;buffer_max],
             connected: true,
-            stream: Box::new(BufReader::new(stream))
+            stream: Box::new(stream)
         }
     }
 
