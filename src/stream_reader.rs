@@ -1,5 +1,4 @@
 use std::io::{BufReader, Read};
-use std::net::{SocketAddr, TcpListener};
 use crate::misc::{HttpError, StreamError};
 use crate::request::HttpRequest;
 
@@ -184,6 +183,7 @@ impl<'a> StreamReader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::io::Write;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread;
@@ -193,10 +193,6 @@ mod tests {
     use crate::server::bind_server_socket;
     use crate::test_data::{HTTP_ERR_GET_ONLY_ONE_NEWLINE, HTTP_REQ_GET, HTTP_REQ_GET_CHROME_FULL, HTTP_REQ_GET_MINIMAL_WITH_PATH_BAR, HTTP_REQ_GET_MINIMAL_WITH_PATH_FOO, HTTP_REQ_POST};
 
-    use super::*;
-
-    use super::*;
-    use test_case::test_case;
 
     fn create_server_socket(timeout_ms: u64) -> (TcpListener, SocketAddr) {
         let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();

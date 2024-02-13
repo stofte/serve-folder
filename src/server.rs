@@ -10,7 +10,7 @@ use phf::phf_map;
 use socket2::{Domain, Socket, TcpKeepalive, Type};
 use thiserror::Error;
 use crate::log::{LogCategory, log};
-use crate::request::HttpRequestOld;
+use crate::request::{HttpRequest, HttpRequestOld};
 use crate::stream_reader::StreamReader;
 
 const GET_VERB: &str = "GET ";
@@ -50,6 +50,7 @@ enum Error {
     PathMetadataFailed,
 }
 
+#[derive(Debug)]
 struct RequestedFileInfo {
     file_path: PathBuf,
     file_size: u64,
@@ -164,6 +165,44 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
     }
 }
 
+fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
+    let path = &request_info.file_path;
+    let f_wrapped = File::open(&path);
+    if f_wrapped.is_ok() {
+        // File could be opened
+        let f = f_wrapped.unwrap();
+        let mut br = BufReader::new(f);
+        let lines = [
+            "HTTP/1.1 200 OK",
+            "Cache-Control: no-store",
+            &format!("Content-Type: {}", &request_info.mime_type),
+            &format!("Content-Length: {}\r\n\r\n", &request_info.file_size),
+        ].join("\r\n");
+
+        // We dump the file directly into the response.
+        // Ideally we would ensure crlf as newlines, etc.
+        if writer.write_all(lines.as_bytes()).is_ok() {
+            // All headers written, try to write file
+            if std::io::copy(&mut br, &mut *writer).is_ok() {
+                format!("{} ({} bytes)", path.to_string_lossy(), request_info.file_size)
+            } else {
+                let status = format!("Failed to write contents to response");
+                log(LogCategory::Warning, &status);
+                status
+            }
+        } else {
+            let status = format!("Failed to write headers to response");
+            log(LogCategory::Warning, &status);
+            status
+        }
+    } else {
+        let status = format!("500 Internal Server Error");
+        handle_http_error3(writer, 500, "Internal Server Error");
+        log(LogCategory::Info, &status);
+        status
+    }
+}
+
 fn handle_response2(writer: &Arc<Mutex<impl Write>>, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
     let path = &request_info.file_path;
     let f_wrapped = File::open(&path);
@@ -224,6 +263,131 @@ fn handle_http_error(writer: &Arc<Mutex<impl Write>>, code: u32, body: &str) {
     writer.lock().unwrap().write_all(lines.as_bytes()).unwrap_or_else(|err| {
         log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
     });
+}
+
+fn handle_http_error3(writer: &mut impl Write, code: u32, body: &str) {
+    let status = match code {
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error"
+    };
+    let header = &format!("HTTP/1.1 {} {}", code, status);
+    let content_type = "Content-Type: text/plain";
+    let content_length = &format!("Content-Length: {}", body.len());
+
+    let lines = [
+        header,
+        content_type,
+        content_length,
+        "",
+        body
+    ].join("\r\n");
+
+    writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
+        log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
+    });
+}
+
+fn process_request3(request: &HttpRequest, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+    use std::path::MAIN_SEPARATOR_STR;
+    use normpath::PathExt;
+    use glob::glob;
+    
+    let target_path = request.target.as_ref().unwrap();
+    let parse_url = String::from("http://localhost") + &target_path;
+    let cur_dir = &conf.www_root;
+    let fs_path = match url::Url::parse(&parse_url) {
+        Ok(url) => {
+            let mut url_path = url.path().replace("/", MAIN_SEPARATOR_STR);
+            // rust's fs code gets confused if we join a "\", as this
+            // will just change the directory to root, eg "C:\"
+            url_path = url_path[1..].to_owned();
+            let path_buf = Path::new(&cur_dir)
+                .join(url_path)
+                .normalize_virtually(); // This does not hit the fs, which is what we want
+            match path_buf {
+                Ok(v) => Ok(v),
+                Err(..) => Err(Error::PathParsingFailed)
+            }
+        },
+        Err(_) => Err(Error::PathParsingFailed)
+    }?;
+
+    let mut file_size = 0;
+    let mut file_path = fs_path.into_path_buf();
+
+    match std::fs::metadata(&file_path) {
+        Ok(metadata) => {
+            if metadata.is_file() {
+                // All is good, direct file hit
+                file_size = metadata.len();
+                Ok(())
+            } else if metadata.is_dir() {
+                // Check if we have a default doc to return instead
+                match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
+                    Some(p) => {
+                        file_size = p.metadata()?.len();
+                        file_path = p;
+                        Ok(())
+                    },
+                    None => {
+                        log(LogCategory::Info, "Path is directory");
+                        Err(Error::PathMustBeFile)
+                    }
+                }
+            } else {
+                log(LogCategory::Info, "Path not handled");
+                Err(Error::PathMustBeFile)
+            }
+        },
+        Err(err) => {
+            // Nothing was found, see if a glob can find the file regardle
+            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))?;
+            
+            let glob_match_ok = match matches.next() {
+                Some(file) => {
+                    match file {
+                        Ok(p) => {
+                            match std::fs::metadata(p.clone()) {
+                                Ok(metadata) => {
+                                    if metadata.is_file() {
+                                        file_size = metadata.len();
+                                        file_path = p;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                },
+                                Err(..) => false
+                            }
+                        },
+                        Err(..) => false
+                    }
+                },
+                None => false
+            };
+
+            // We only want one match
+            let single_match = glob_match_ok && matches.next().is_none();
+            if single_match {
+                // One matched file
+                Ok(())
+            } else if glob_match_ok {
+                // We must have had multiple matches
+                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err));
+                Err(Error::PathMustBeFile)
+            } else {
+                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err));
+                Err(Error::PathMetadataFailed)
+            }
+        }
+    }?;
+
+    Ok(RequestedFileInfo {
+        mime_type: get_mimetype(&file_path, &conf.mime_types).to_string(),
+        file_size: file_size,
+        file_path: file_path,
+    })
 }
 
 fn process_request2(request: &HttpRequestOld, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
@@ -504,26 +668,49 @@ pub fn bind_server_socket(addr: SocketAddr, timeout_ms: u64) -> Result<Socket, s
 }
 
 struct Server {
-
+    conf: ServerConfiguration,
+    address: SocketAddr,
+    tls_acceptor: Option<Arc<TlsAcceptor>>,
 }
 
 impl Server {
-    fn run() {
-        let addr = "127.0.0.1:8081".parse::<SocketAddr>().unwrap();
-        let sock = bind_server_socket(addr, 2000).unwrap();
+    pub fn new(conf: ServerConfiguration, address: SocketAddr, tls_acceptor: Option<Arc<TlsAcceptor>>) -> Server {
+        Server {
+            conf,
+            address,
+            tls_acceptor,
+        }
+    }
+    pub fn protocol(&self) -> String {
+        match self.tls_acceptor { Some(_) => "https".to_owned(), None => "http".to_owned() }
+    }
+    pub fn run(&self) {
+
+        let sock = bind_server_socket(self.address, 2000).unwrap();
         let listener: TcpListener = sock.into();
         
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    let conf = self.conf.clone();
                     thread::spawn(move || {
                         let read_stream = stream.try_clone().unwrap();
                         let mut write_stream = stream.try_clone().unwrap();
                         let mut reader = StreamReader::new(read_stream, 1000);
                         loop {
                             match reader.next_request() {
-                                Ok(_request) => {
+                                Ok(request) => {
                                     // todo handle the server response
+                                    match process_request3(&request, &conf) {
+                                        Ok(file_info) => {
+                                            handle_response3(&mut write_stream, &file_info, &conf);
+                                        },
+                                        Err(err) => {
+                                            log(LogCategory::Info, &format!("Error: {:?}", err));
+                                            handle_http_error3(&mut write_stream, 404, "Not Found");
+                                        }
+                                    };
+
                                 },
                                 Err(_err) => {
                                     // todo implement this
@@ -539,18 +726,15 @@ impl Server {
                 },
                 Err(..) => ()
             };
-
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, fs, io::ErrorKind};
-    use test_case::test_case;
-    use crate::test_data::HTTP_REQ_POST;
-
     use super::*;
+    use std::{collections::VecDeque, fs, io::ErrorKind};
+    use crate::test_data::{HTTP_REQ_GET_README_MD, HTTP_REQ_POST};
 
     fn wrap_inp_vec(vec: VecDeque<u8>) -> Arc<Mutex<VecDeque<u8>>> {
         Arc::new(Mutex::new(vec))
@@ -703,14 +887,68 @@ mod tests {
     //     assert!(response_start_line.starts_with("HTTP/1.1 200 OK"));
     //     assert_eq!(mime_type, content_type);
     // }
+    
+    fn start_server(address: SocketAddr, conf: Option<ServerConfiguration>) {
+        let conf = match conf {
+            Some(c) => c,
+            None => ServerConfiguration::new(PathBuf::new(), None, None)
+        };
+        thread::spawn(move || {
+            let server = Server::new(conf, address, None);
+            server.run();
+        });
+    }
+
+    #[test]
+    fn responds_to_get_request() {
+        let address = "127.0.0.1:11082".parse::<SocketAddr>().unwrap();
+        start_server(address, None);
+        
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            // should fetch the readme file of the project
+            stream.write(HTTP_REQ_GET_README_MD.as_bytes()).unwrap();
+            let mut buf: [u8; 10000] = [0;10000];
+            let read_c = stream.read(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
+        });
+
+        let response = client_handle.join().unwrap();
+        let mut res_lines = response.lines();
+        let response_start_line = res_lines.next().expect("No lines");
+        let content_type_header = res_lines
+            .find(|l| l.starts_with("Content-Type")).expect("Could not find content-type header");
+        let content_length_header = res_lines
+            .find(|l| l.starts_with("Content-Length")).expect("Could not find content-length header");
+        let content_type = content_type_header.split(":")
+            .last().expect("Content-Type header invalid")
+            .trim();
+        let content_length = content_length_header.split(":")
+            .last().expect("Content-Length header invalid")
+            .trim()
+            .parse::<i32>().expect("Could not parse content-length as number");
+
+        let file_length = fs::read_to_string("readme.md").expect("Could not read file").len();
+
+        // check that we got a 200 ok
+        assert_eq!("HTTP/1.1 200 OK", response_start_line);
+
+        // check that our content-length matches the file itself
+        assert_eq!(content_length as usize, file_length);
+
+        // Mime type should also be included
+        assert_eq!("text/plain", content_type);
+
+        // assert!(response.starts_with("HTTP/1.1 200"));
+    }
 
     #[test]
     fn connection_is_closed_after_reading_unpported_method() {
-
-        thread::spawn(|| Server::run());
-
+        let address = "127.0.0.1:11081".parse::<SocketAddr>().unwrap();
+        start_server(address, None);
+        
         let client_handle = thread::spawn(move || {
-            let mut stream = TcpStream::connect("127.0.0.1:8081").unwrap();
+            let mut stream = TcpStream::connect(address).unwrap();
 
             // post method is unsupported
             stream.write(HTTP_REQ_POST.as_bytes()).unwrap();
