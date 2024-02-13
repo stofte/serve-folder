@@ -7,11 +7,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-url = "2.4.1"
-clap = { version = "4.4.2", features = ["derive"] }
-colored = "2.0.4"
+url = "2.5"
+clap = { version = "4.5", features = ["derive"] }
+colored = "2.1"
 normpath = "1.1.1"
-chrono = "0.4.30"
+chrono = "0.4"
 native-tls = "0.2.11"
 hex = "0.4.3"
 phf = { version = "0.11", features = ["macros"] }
@@ -24,4 +24,4 @@ windows = { version = "0.52", features = [
     "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
-test-case = "*"
+test-case = "3.2"

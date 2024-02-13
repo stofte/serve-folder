@@ -1,13 +1,17 @@
 use std::io::{BufReader, BufWriter, Read, Write, BufRead};
 use std::fs::File;
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use native_tls::{TlsAcceptor, HandshakeError};
 use phf::phf_map;
+use socket2::{Domain, Socket, TcpKeepalive, Type};
 use thiserror::Error;
 use crate::log::{LogCategory, log};
-use crate::request::HttpRequest;
+use crate::request::HttpRequestOld;
+use crate::stream_reader::StreamReader;
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -107,7 +111,7 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
     use std::time::Instant;
 
     let mut last_data = Instant::now();
-    let mut req = HttpRequest::new();
+    let mut req = HttpRequestOld::new();
     let mut data = [0; TCP_BUFFER_SIZE];
     loop {
         let res = stream.lock().unwrap().read(&mut data);
@@ -133,8 +137,8 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
                         };
                         // TODO: if we did not receive "Connection: Keep-Alive", 
                         // we should also break here, and close down the connection
-                        if req.connectionKeepAlive() {
-                            req = HttpRequest::new();
+                        if req.connection_keep_alive() {
+                            req = HttpRequestOld::new();
                             continue;
                         } else {
                             break;
@@ -222,7 +226,7 @@ fn handle_http_error(writer: &Arc<Mutex<impl Write>>, code: u32, body: &str) {
     });
 }
 
-fn process_request2(request: &HttpRequest, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+fn process_request2(request: &HttpRequestOld, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
     use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
     use glob::glob;
@@ -489,10 +493,63 @@ fn get_mimetype(path: &PathBuf, mimetypes: &Option<Vec<(String, String)>>) -> St
     mt.to_owned()
 }
 
+pub fn bind_server_socket(addr: SocketAddr, timeout_ms: u64) -> Result<Socket, std::io::Error> {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(4));
+    socket.set_tcp_keepalive(&keepalive)?;
+    socket.set_read_timeout(Some(Duration::from_millis(timeout_ms)))?;
+    socket.bind(&addr.into())?;
+    socket.listen(32)?;
+    Ok(socket)
+}
+
+struct Server {
+
+}
+
+impl Server {
+    fn run() {
+        let addr = "127.0.0.1:8081".parse::<SocketAddr>().unwrap();
+        let sock = bind_server_socket(addr, 2000).unwrap();
+        let listener: TcpListener = sock.into();
+        
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    thread::spawn(move || {
+                        let read_stream = stream.try_clone().unwrap();
+                        let mut write_stream = stream.try_clone().unwrap();
+                        let mut reader = StreamReader::new(read_stream, 1000);
+                        loop {
+                            match reader.next_request() {
+                                Ok(_request) => {
+                                    // todo handle the server response
+                                },
+                                Err(_err) => {
+                                    // todo implement this
+                                    write_stream.write("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
+                                    // close connection on our end, both by calling shutdown, 
+                                    // to prevent issues on our end and also by dropping the streamreader
+                                    write_stream.shutdown(std::net::Shutdown::Both).unwrap();
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                },
+                Err(..) => ()
+            };
+
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, fs};
+    use std::{collections::VecDeque, fs, io::ErrorKind};
     use test_case::test_case;
+    use crate::test_data::HTTP_REQ_POST;
+
     use super::*;
 
     fn wrap_inp_vec(vec: VecDeque<u8>) -> Arc<Mutex<VecDeque<u8>>> {
@@ -646,4 +703,43 @@ mod tests {
     //     assert!(response_start_line.starts_with("HTTP/1.1 200 OK"));
     //     assert_eq!(mime_type, content_type);
     // }
+
+    #[test]
+    fn connection_is_closed_after_reading_unpported_method() {
+
+        thread::spawn(|| Server::run());
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect("127.0.0.1:8081").unwrap();
+
+            // post method is unsupported
+            stream.write(HTTP_REQ_POST.as_bytes()).unwrap();
+            let mut buf: [u8; 100] = [0;100];
+            let read_c = stream.read(&mut buf).unwrap();
+
+            // response message should be 405 method not allowed
+            let str = String::from_utf8_lossy(&buf[0..read_c]).into_owned();
+
+            // and if we try to continue using the socket, it should be flagged as closed
+            let err_kind: ErrorKind;
+            loop {
+                match stream.write("x".as_bytes()) {
+                    // connection does not close "instantly", so we might have some delay on this
+                    Ok(..) => (),
+                    Err(e) => {
+                        // we should get this pretty fast however
+                        err_kind = e.kind();
+                        break;
+                    }
+                };
+            };
+
+            (str, err_kind)
+        });
+
+        let client_res = client_handle.join().unwrap();
+
+        assert!(client_res.0.starts_with("HTTP/1.1 405 Method Not Allowed"));
+        assert_eq!(client_res.1, ErrorKind::ConnectionAborted);
+    }
 }
