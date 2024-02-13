@@ -1000,8 +1000,10 @@ mod tests {
         });
 
         let client_res = client_handle.join().unwrap();
+        let e = client_res.1;
 
         assert!(client_res.0.starts_with("HTTP/1.1 405 Method Not Allowed"));
-        assert_eq!(client_res.1, ErrorKind::ConnectionAborted);
+        // depending on how the connection is closed, it can become both reset or aborted
+        assert!(e == ErrorKind::ConnectionReset || e == ErrorKind::ConnectionAborted);
     }
 }
