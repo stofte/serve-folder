@@ -165,7 +165,7 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
     }
 }
 
-fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
+fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, conf: &ServerConfiguration, stream: &mut Stream) -> String {
     let path = &request_info.file_path;
     let f_wrapped = File::open(&path);
     if f_wrapped.is_ok() {
@@ -181,9 +181,9 @@ fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, c
 
         // We dump the file directly into the response.
         // Ideally we would ensure crlf as newlines, etc.
-        if writer.write_all(lines.as_bytes()).is_ok() {
+        if stream.write_all(lines.as_bytes()).is_ok() {
             // All headers written, try to write file
-            if std::io::copy(&mut br, &mut *writer).is_ok() {
+            if stream.write_reader(&mut br).is_ok() {
                 format!("{} ({} bytes)", path.to_string_lossy(), request_info.file_size)
             } else {
                 let status = format!("Failed to write contents to response");
@@ -285,6 +285,31 @@ fn handle_http_error3(writer: &mut impl Write, code: u32, body: &str) {
 
     writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
         log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
+    });
+}
+
+
+fn handle_http_error4(writer: &mut Stream, code: u32, body: &str) {
+    let status = match code {
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error"
+    };
+    let header = &format!("HTTP/1.1 {} {}", code, status);
+    let content_type = "Content-Type: text/plain";
+    let content_length = &format!("Content-Length: {}", body.len());
+
+    let lines = [
+        header,
+        content_type,
+        content_length,
+        "",
+        body
+    ].join("\r\n");
+
+    writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
+        // todo impl default formatter?
+        log(LogCategory::Warning, &format!("Failed writing error response: {:?}", err))
     });
 }
 
@@ -674,14 +699,14 @@ struct Server {
 }
 
 fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: ServerConfiguration) {
-    let mut reader = Stream::new(stream, 1000);
+    let mut stream = Stream::new(stream, 1000);
     loop {
-        match reader.next_request() {
+        match stream.next_request() {
             Ok(request) => {
                 // todo handle the server response
                 match process_request3(&request, &conf) {
                     Ok(file_info) => {
-                        handle_response3(&mut write, &file_info, &conf);
+                        handle_response3(&mut write, &file_info, &conf, &mut stream);
                     },
                     Err(err) => {
                         log(LogCategory::Info, &format!("Error: {:?}", err));

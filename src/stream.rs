@@ -1,4 +1,5 @@
-use std::io::{Error, Read, Write};
+use std::fs::File;
+use std::io::{BufReader, Error, Read, Write};
 use crate::misc::{HttpError, StreamError};
 use crate::request::HttpRequest;
 
@@ -187,8 +188,17 @@ impl<'a> Stream<'a> {
         Ok(req)
     }
 
-    pub fn write(&mut self, data: &[u8]) -> Result<usize, StreamError>{
-        match self.stream.write(data) {
+    pub fn write_all(&mut self, data: &[u8]) -> Result<(), StreamError>{
+        match self.stream.write_all(data) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                Err(self.map_io_err(e))
+            }
+        }
+    }
+
+    pub fn write_reader(&mut self, br: &mut BufReader<File>) -> Result<u64, StreamError> {
+        match std::io::copy(br, &mut self.stream) {
             Ok(n) => Ok(n),
             Err(e) => {
                 Err(self.map_io_err(e))
@@ -438,11 +448,40 @@ mod tests {
 
         let socket = TcpStream::connect(server_addr).unwrap();
         let mut stream = Stream::new(socket, 1000);
-        let write_c = stream.write(b"hej mor");
+        let write_c = stream.write_all(b"hej mor");
 
         let read_str = read_handle.join().unwrap();
 
-        assert_eq!(write_c, Ok(7));
+        assert_eq!(write_c, Ok(()));
         assert_eq!(read_str, "hej mor".to_owned());
+    }
+
+    #[test]
+    fn can_write_bufreader_to_tcpstream() {
+        let (listener, server_addr) = create_server_socket(1000);
+        
+        let read_handle = thread::spawn(move || {
+            let incoming = listener.accept().unwrap();
+            let mut sock = incoming.0;
+            let mut read_buf = [0 as u8;10000];
+            let read_c = sock.read(&mut read_buf).unwrap();
+            String::from_utf8_lossy(&read_buf[0..read_c]).into_owned()
+        });
+
+        let file = File::open("readme.md").unwrap();
+        let file_size = file.metadata().unwrap().len();
+        let mut br = BufReader::new(file);
+        let mut file_contents = String::new();
+        File::open("readme.md").unwrap().read_to_string(&mut file_contents).unwrap();        
+        
+        let socket = TcpStream::connect(server_addr).unwrap();
+        let mut stream = Stream::new(socket, 1000);
+        
+        let write_c = stream.write_reader(&mut br);
+
+        let read_str = read_handle.join().unwrap();
+
+        assert_eq!(write_c, Ok(file_size));
+        assert_eq!(read_str, file_contents);
     }
 }
