@@ -224,73 +224,73 @@ mod tests {
 
     #[test]
     fn read_lines() {
-        let mut r = Stream::new(wrap_str("hej mor\nmore lines\nxxx"), 1000);
+        let mut s = Stream::new(wrap_str("hej mor\nmore lines\nxxx"), 1000);
 
-        assert_eq!(r.next_line(), Ok("hej mor".to_owned()));
-        assert_eq!(r.next_line(), Ok("more lines".to_owned()));
+        assert_eq!(s.next_line(), Ok("hej mor".to_owned()));
+        assert_eq!(s.next_line(), Ok("more lines".to_owned()));
         // the "xxx" bytes are "lost", at least in when not using a real socket.
-        assert_eq!(r.next_line(), Err(StreamError::ConnectionClosed));
+        assert_eq!(s.next_line(), Err(StreamError::ConnectionClosed));
     }
 
     #[test]
     fn mixed_newlines() {
         // we only handle optional CR, not other combos
-        let mut r = Stream::new(wrap_str("1\r\n2\n3\r\n"), 1000);
+        let mut s = Stream::new(wrap_str("1\r\n2\n3\r\n"), 1000);
 
-        assert_eq!(r.next_line(), Ok("1".to_owned()));
-        assert_eq!(r.next_line(), Ok("2".to_owned()));
-        assert_eq!(r.next_line(), Ok("3".to_owned()));
+        assert_eq!(s.next_line(), Ok("1".to_owned()));
+        assert_eq!(s.next_line(), Ok("2".to_owned()));
+        assert_eq!(s.next_line(), Ok("3".to_owned()));
     }
 
     #[test]
     fn connection_closed() {
-        let (server, server_addr) = create_server_socket(4000);
+        let (listener, server_addr) = create_server_socket(4000);
 
         // server
         let server_handle = thread::spawn(move || {
-            let connection = server.accept().unwrap();
-            let mut r = Stream::new(connection.0, 1000);
+            let connection = listener.accept().unwrap();
+            let mut s = Stream::new(connection.0, 1000);
             vec![
-                r.next_line(), 
-                r.next_line(),
-                r.next_line(),
-                r.next_line()
+                s.next_line(), 
+                s.next_line(),
+                s.next_line(),
+                s.next_line()
             ]
         });
 
         // client
         thread::spawn(move || {
-            let mut stream = TcpStream::connect(server_addr).unwrap();
-            stream.write("hej mor\n".as_bytes()).unwrap();
-            stream.write("\n".as_bytes()).unwrap();
-            stream.write("test hest\r\n".as_bytes()).unwrap();
-            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            let mut s = TcpStream::connect(server_addr).unwrap();
+            s.write("hej mor\n".as_bytes()).unwrap();
+            s.write("\n".as_bytes()).unwrap();
+            s.write("test hest\r\n".as_bytes()).unwrap();
+            s.shutdown(std::net::Shutdown::Both).unwrap();
         });
 
         // no real reason to wait for the client thread
-        let server_result = server_handle.join().unwrap();
+        let result = server_handle.join().unwrap();
 
-        assert_eq!(server_result[0], Ok("hej mor".to_owned()));
-        assert_eq!(server_result[1], Ok("".to_owned()));
-        assert_eq!(server_result[2], Ok("test hest".to_owned()));
-        assert_eq!(server_result[3], Err(StreamError::ConnectionClosed));
+        assert_eq!(result[0], Ok("hej mor".to_owned()));
+        assert_eq!(result[1], Ok("".to_owned()));
+        assert_eq!(result[2], Ok("test hest".to_owned()));
+        assert_eq!(result[3], Err(StreamError::ConnectionClosed));
     }
 
     #[test]
     fn next_bytes_after_lines() {
-        let mut r = Stream::new(wrap_str("1\n2\n333\n444"), 1000);
+        let mut s = Stream::new(wrap_str("1\n2\n333\n444"), 1000);
 
-        assert_eq!(r.next_line(), Ok("1".to_owned()));
-        assert_eq!(r.next_line(), Ok("2".to_owned()));
-        assert_eq!(r.next_bytes(7), Ok("333\n444".as_bytes().into()));
+        assert_eq!(s.next_line(), Ok("1".to_owned()));
+        assert_eq!(s.next_line(), Ok("2".to_owned()));
+        assert_eq!(s.next_bytes(7), Ok("333\n444".as_bytes().into()));
     }
 
     #[test]
     fn buffer_overflow() {
         let inp = VecDeque::from((b"0123456789".repeat(101)).to_owned());
-        let mut r = Stream::new(inp, 100);
+        let mut s = Stream::new(inp, 100);
 
-        assert_eq!(r.next_line(), Err(StreamError::BufferOverflow));
+        assert_eq!(s.next_line(), Err(StreamError::BufferOverflow));
     }
 
     #[test]
@@ -298,20 +298,20 @@ mod tests {
         // we don't want to wait too long on timeout events, but 250 ms should 
         // be a reasonable value for operating system based on random ass guessing.
         let timeout_ms = 250;
-        let (server, server_addr) = create_server_socket(timeout_ms);
+        let (listener, server_addr) = create_server_socket(timeout_ms);
 
         let server_handle = thread::spawn(move || {
-            let connection = server.accept().unwrap();
-            let mut r = Stream::new(connection.0, 1000);
+            let connection = listener.accept().unwrap();
+            let mut s = Stream::new(connection.0, 1000);
             vec![
-                r.next_line(), 
-                r.next_line()
+                s.next_line(), 
+                s.next_line()
             ]
         });
 
         thread::spawn(move || {
-            let mut stream = TcpStream::connect(server_addr).unwrap();
-            stream.write("hej mor\n".as_bytes()).unwrap();
+            let mut s = TcpStream::connect(server_addr).unwrap();
+            s.write("hej mor\n".as_bytes()).unwrap();
             thread::sleep(Duration::from_millis(timeout_ms * 2));
         });
 
@@ -323,30 +323,30 @@ mod tests {
 
     #[test]
     fn saves_connection_state_on_error() {
-        let mut r = Stream::new(wrap_str("1\r\n"), 1000);
+        let mut s = Stream::new(wrap_str("1\r\n"), 1000);
         
-        assert_eq!(r.next_line(), Ok("1".to_owned()));
-        assert_eq!(r.next_line(), Err(StreamError::ConnectionClosed));
-        assert_eq!(r.next_line(), Err(StreamError::StreamNotConnected));
-        assert_eq!(r.next_bytes(10), Err(StreamError::StreamNotConnected));
+        assert_eq!(s.next_line(), Ok("1".to_owned()));
+        assert_eq!(s.next_line(), Err(StreamError::ConnectionClosed));
+        assert_eq!(s.next_line(), Err(StreamError::StreamNotConnected));
+        assert_eq!(s.next_bytes(10), Err(StreamError::StreamNotConnected));
     }
 
     #[test]
     fn simple_get_request() {
-        let mut r = Stream::new(wrap_str(HTTP_REQ_GET), 1000);
-        let req = r.next_request().unwrap();
-        assert_eq!(req.method, Some(HttpMethod::Get));
+        let mut s = Stream::new(wrap_str(HTTP_REQ_GET), 1000);
+        let request = s.next_request().unwrap();
+        assert_eq!(request.method, Some(HttpMethod::Get));
     }
 
     #[test]
     fn handles_stream_errors() {
-        let (server, server_addr) = create_server_socket(100);
+        let (listener, server_addr) = create_server_socket(100);
 
         let server_handle = thread::spawn(move || {
-            let connection = server.accept().unwrap();
-            let mut r = Stream::new(connection.0, 1000);
+            let connection = listener.accept().unwrap();
+            let mut s = Stream::new(connection.0, 1000);
             vec![
-                r.next_request()
+                s.next_request()
             ]
         });
 
@@ -357,22 +357,22 @@ mod tests {
             stream.shutdown(std::net::Shutdown::Both).unwrap();
         });
 
-        let mut res = server_handle.join().unwrap();
-        let req = res.pop().unwrap();
-        assert!(req.is_err());
-        assert_eq!(req.unwrap_err(), HttpError::StreamError(StreamError::ConnectionClosed));
+        let mut result = server_handle.join().unwrap();
+        let request = result.pop().unwrap();
+        assert!(request.is_err());
+        assert_eq!(request.unwrap_err(), HttpError::StreamError(StreamError::ConnectionClosed));
     }
 
     #[test]
     fn multiple_requests_on_same_connection() {
-        let (server, server_addr) = create_server_socket(100);
+        let (listener, server_addr) = create_server_socket(100);
 
         let server_handle = thread::spawn(move || {
-            let connection = server.accept().unwrap();
-            let mut r = Stream::new(connection.0, 1000);
+            let connection = listener.accept().unwrap();
+            let mut s = Stream::new(connection.0, 1000);
             vec![
-                r.next_request(),
-                r.next_request(),
+                s.next_request(),
+                s.next_request(),
             ]
         });
 
@@ -383,9 +383,9 @@ mod tests {
             stream.shutdown(std::net::Shutdown::Both).unwrap();
         });
 
-        let mut res = server_handle.join().unwrap();
-        let req2 = res.pop().unwrap();
-        let req1 = res.pop().unwrap();
+        let mut result = server_handle.join().unwrap();
+        let req2 = result.pop().unwrap();
+        let req1 = result.pop().unwrap();
 
         assert!(req1.is_ok());
         assert!(req2.is_ok());
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn can_parse_a_realistic_get_request() {
-        let mut reader = Stream::new(wrap_str(HTTP_REQ_GET_CHROME_FULL), 1000);
-        let req = reader.next_request();
+        let mut stream = Stream::new(wrap_str(HTTP_REQ_GET_CHROME_FULL), 1000);
+        let req = stream.next_request();
 
         assert!(req.is_ok());
         let req = req.unwrap();
@@ -415,9 +415,9 @@ mod tests {
 
     #[test]
     fn method_not_supported_is_returned() {
-        let mut reader = Stream::new(wrap_str(HTTP_REQ_POST), 1000);
+        let mut stream = Stream::new(wrap_str(HTTP_REQ_POST), 1000);
 
-        let req1 = reader.next_request();
+        let req1 = stream.next_request();
 
         assert!(req1.is_err());
         assert_eq!(req1.unwrap_err(), HttpError::MethodNotSupported("POST".to_owned()));
@@ -425,11 +425,11 @@ mod tests {
 
     #[test]
     fn can_write_to_tcpstream() {
-        let (server, server_addr) = create_server_socket(100);
+        let (listener, server_addr) = create_server_socket(100);
 
-        // in this case, the streamreader acts as "client"
+        // in this case, the stream acts as "client"
         let read_handle = thread::spawn(move || {
-            let incoming = server.accept().unwrap();
+            let incoming = listener.accept().unwrap();
             let mut sock = incoming.0;
             let mut read_buf = [0 as u8;100];
             let read_c = sock.read(&mut read_buf).unwrap();
