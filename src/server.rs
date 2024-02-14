@@ -673,8 +673,8 @@ struct Server {
     tls_acceptor: Option<Arc<TlsAcceptor>>,
 }
 
-fn handle_connection3(read: impl Read, mut write: impl Write, conf: ServerConfiguration) {
-    let mut reader = StreamReader::new(read, 1000);
+fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: ServerConfiguration) {
+    let mut reader = StreamReader::new(stream, 1000);
     loop {
         match reader.next_request() {
             Ok(request) => {
@@ -697,6 +697,36 @@ fn handle_connection3(read: impl Read, mut write: impl Write, conf: ServerConfig
                 // the thread to exit and the connection to be dropped
                 break;
             }
+        }
+    }
+}
+
+fn setup_connection3(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
+    let read_stream = stream.try_clone().unwrap();
+    let write_stream = stream.try_clone().unwrap();    
+    match &tls_acceptor {
+        Some(acceptor) => {
+            match acceptor.accept(stream) {
+                Ok(stream) => {
+                    let s = Arc::new(Mutex::new(stream));
+                    thread::spawn(move || handle_connection3(read_stream, write_stream, conf));
+                },
+                Err(e) => {
+                    match &e {
+                        HandshakeError::Failure(ee) => {
+                            // Likely because of self-signed not being in trusted roots
+                            log(LogCategory::Error, &format!("{}", ee));
+                        },
+                        _ => ()
+                    }
+                }
+            }
+        },
+        None => {
+            thread::spawn(move || {
+                let s = Arc::new(Mutex::new(stream));
+                handle_connection3(read_stream, write_stream, conf);
+            });
         }
     }
 }

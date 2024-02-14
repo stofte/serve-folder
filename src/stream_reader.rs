@@ -1,17 +1,32 @@
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use crate::misc::{HttpError, StreamError};
 use crate::request::HttpRequest;
+
+trait ReadWrite: std::io::Read + std::io::Write {}
+impl<T: Read + Write> ReadWrite for T {} 
+
+pub struct StreamReader2<'a> {
+    stream: Box<dyn ReadWrite + 'a>
+}
+
+impl<'a> StreamReader2<'a> {
+    fn new(stream: impl ReadWrite + 'a) -> StreamReader2<'a> {
+        StreamReader2 {
+            stream: Box::new(stream)
+        }
+    }
+}
 
 pub struct StreamReader<'a> {
     buffer_max: usize,
     buffer: Vec<u8>,
     stream_buffer: Vec<u8>,
-    stream: Box<dyn Read + 'a>,
+    stream: Box<dyn ReadWrite + 'a>,
     connected: bool,
 }
 
 impl<'a> StreamReader<'a> {
-    pub fn new(stream: impl Read + 'a, buffer_max: usize) -> StreamReader<'a> {
+    pub fn new(stream: impl ReadWrite + 'a, buffer_max: usize) -> StreamReader<'a> {
         let mut v = Vec::new();
         v.resize(buffer_max, 0);
         StreamReader {
@@ -184,6 +199,7 @@ impl<'a> StreamReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::io::Write;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread;
@@ -193,7 +209,6 @@ mod tests {
     use crate::server::bind_server_socket;
     use crate::test_data::{HTTP_ERR_GET_ONLY_ONE_NEWLINE, HTTP_REQ_GET, HTTP_REQ_GET_CHROME_FULL, HTTP_REQ_GET_MINIMAL_WITH_PATH_BAR, HTTP_REQ_GET_MINIMAL_WITH_PATH_FOO, HTTP_REQ_POST};
 
-
     fn create_server_socket(timeout_ms: u64) -> (TcpListener, SocketAddr) {
         let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         let server_socket = bind_server_socket(server_addr, timeout_ms).unwrap();
@@ -202,9 +217,13 @@ mod tests {
         return (listener, server_addr_real);
     }
 
+    fn wrap_str(s: &str) -> VecDeque<u8> {
+        VecDeque::from(s.as_bytes().to_owned())
+    }
+
     #[test]
     fn read_lines() {
-        let mut r = StreamReader::new("hej mor\nmore lines\nxxx".as_bytes(), 1000);
+        let mut r = StreamReader::new(wrap_str("hej mor\nmore lines\nxxx"), 1000);
 
         assert_eq!(r.next_line(), Ok("hej mor".to_owned()));
         assert_eq!(r.next_line(), Ok("more lines".to_owned()));
@@ -215,7 +234,7 @@ mod tests {
     #[test]
     fn mixed_newlines() {
         // we only handle optional CR, not other combos
-        let mut r = StreamReader::new("1\r\n2\n3\r\n".as_bytes(), 1000);
+        let mut r = StreamReader::new(wrap_str("1\r\n2\n3\r\n"), 1000);
 
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Ok("2".to_owned()));
@@ -258,7 +277,7 @@ mod tests {
 
     #[test]
     fn next_bytes_after_lines() {
-        let mut r = StreamReader::new("1\n2\n333\n444".as_bytes(), 1000);
+        let mut r = StreamReader::new(wrap_str("1\n2\n333\n444"), 1000);
 
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Ok("2".to_owned()));
@@ -267,8 +286,8 @@ mod tests {
 
     #[test]
     fn buffer_overflow() {
-        let large_string = "0123456789".repeat(101);
-        let mut r = StreamReader::new(large_string.as_bytes(), 100);
+        let inp = VecDeque::from((b"0123456789".repeat(101)).to_owned());
+        let mut r = StreamReader::new(inp, 100);
 
         assert_eq!(r.next_line(), Err(StreamError::BufferOverflow));
     }
@@ -303,7 +322,7 @@ mod tests {
 
     #[test]
     fn saves_connection_state_on_error() {
-        let mut r = StreamReader::new("1\r\n".as_bytes(), 1000);
+        let mut r = StreamReader::new(wrap_str("1\r\n"), 1000);
         
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Err(StreamError::ConnectionClosed));
@@ -311,11 +330,9 @@ mod tests {
         assert_eq!(r.next_bytes(10), Err(StreamError::StreamNotConnected));
     }
 
-
-
     #[test]
     fn simple_get_request() {
-        let mut r = StreamReader::new(HTTP_REQ_GET.as_bytes(), 1000);
+        let mut r = StreamReader::new(wrap_str(HTTP_REQ_GET), 1000);
         let req = r.next_request().unwrap();
         assert_eq!(req.method, Some(HttpMethod::Get));
     }
@@ -385,7 +402,7 @@ mod tests {
 
     #[test]
     fn can_parse_a_realistic_get_request() {
-        let mut reader = StreamReader::new(HTTP_REQ_GET_CHROME_FULL.as_bytes(), 1000);
+        let mut reader = StreamReader::new(wrap_str(HTTP_REQ_GET_CHROME_FULL), 1000);
         let req = reader.next_request();
 
         assert!(req.is_ok());
@@ -397,11 +414,19 @@ mod tests {
 
     #[test]
     fn method_not_supported_is_returned() {
-        let mut reader = StreamReader::new(HTTP_REQ_POST.as_bytes(), 1000);
+        let mut reader = StreamReader::new(wrap_str(HTTP_REQ_POST), 1000);
 
         let req1 = reader.next_request();
 
         assert!(req1.is_err());
         assert_eq!(req1.unwrap_err(), HttpError::MethodNotSupported("POST".to_owned()));
+    }
+
+    #[test]
+    fn foo() {
+        let address = "127.0.0.1:11081".parse::<SocketAddr>().unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+
+        let s = StreamReader2::new(stream);
     }
 }
