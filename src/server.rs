@@ -798,7 +798,12 @@ mod tests {
     use super::*;
     use std::{collections::VecDeque, fs, io::ErrorKind};
     use test_case::test_case;
-    use crate::test_data::{HTTP_REQ_GET_README_MD, HTTP_REQ_POST};
+    use crate::test_data::{
+        HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST,
+        HTTP_REQ_GET_README_GLOB_TEST,
+        HTTP_REQ_GET_README_MD,
+        HTTP_REQ_POST
+    };
 
     fn wrap_inp_vec(vec: VecDeque<u8>) -> Arc<Mutex<VecDeque<u8>>> {
         Arc::new(Mutex::new(vec))
@@ -828,77 +833,8 @@ mod tests {
     }
 
     // These tests generally assume that the tests are run with project root as the current_dir.
+    // TODO: fix brittleness with each test requiring a unique server address to work
  
-    #[test]
-    fn returns_expected_200_ok_response() {
-        // Check that:
-        // 1. we got an 200 ok response
-        // 2. mimetype is as expected (here, text/plain)
-        // 3. content-length is as expected
-       
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
-        let inp = wrap_inp_vec(VecDeque::from(b"GET /readme.md HTTP/1.1\r\n\r\n".to_owned()));
-
-        handle_connection(&inp, &conf);
-        let veq = inp.lock().unwrap().to_owned();
-
-        // parse out the response headers, etc
-        let response = String::from_utf8(veq.into()).expect("Failed to read response");
-        let mut res_lines = response.lines();
-
-        let response_start_line = res_lines.next().expect("No lines");
-        let content_type_header = res_lines
-            .find(|l| l.starts_with("Content-Type")).expect("Could not find content-type header");
-        let content_length_header = res_lines
-            .find(|l| l.starts_with("Content-Length")).expect("Could not find content-length header");
-        let content_type = content_type_header.split(":")
-            .last().expect("Content-Type header invalid")
-            .trim();
-        let content_length = content_length_header.split(":")
-            .last().expect("Content-Length header invalid")
-            .trim()
-            .parse::<i32>().expect("Could not parse content-length as number");
-
-        let file_length = fs::read_to_string("readme.md").expect("Could not read file").len();
-
-        // check that we got a 200 ok
-        assert_eq!("HTTP/1.1 200 OK", response_start_line);
-
-        // check that our content-length matches the file itself
-        assert_eq!(content_length as usize, file_length);
-
-        // Mime type should also be included
-        assert_eq!("text/plain", content_type);
-    }
-
-    #[test]
-    fn can_use_globs_to_match_to_filename() {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
-        let inp = wrap_inp_vec(VecDeque::from(b"GET /readme HTTP/1.1\r\n\r\n".to_owned()));
-
-        handle_connection(&inp, &conf);
-
-        let veq = inp.lock().unwrap().to_owned();
-        let response = String::from_utf8(veq.into()).expect("Failed to read response");
-        
-        assert!(response.starts_with("HTTP/1.1 200"));
-    }
-
-    #[test]
-    fn can_not_use_globs_if_multiple_matched_files() {
-        // We want to be deterministic if we also allow globbing
-
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None);
-        let inp = wrap_inp_vec(VecDeque::from(b"GET /Cargo HTTP/1.1\r\n\r\n".to_owned()));
-
-        handle_connection(&inp, &conf);
-        
-        let veq = inp.lock().unwrap().to_owned();
-        let response = String::from_utf8(veq.into()).expect("Failed to read response");
-        
-        assert!(response.starts_with("HTTP/1.1 404"));
-    }
-
     // #[test]
     // fn returns_expected_405_method_not_allowed() {
     //     let conf = ServerConfiguration::new(PathBuf::new(), None, None);
@@ -1060,5 +996,47 @@ mod tests {
         assert!(client_res.0.starts_with("HTTP/1.1 405 Method Not Allowed"));
         // depending on how the connection is closed, it can become both reset or aborted
         assert!(e == ErrorKind::ConnectionReset || e == ErrorKind::ConnectionAborted);
+    }
+
+    #[test]
+    fn can_not_use_globs_if_multiple_matched_files() {
+        // We want to be deterministic if we also allow globbing
+
+        let address = "127.0.0.1:11084".parse::<SocketAddr>().unwrap();
+        start_server(address, None);
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+
+            stream.write(HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST.as_bytes()).unwrap();
+            let mut buf = [0 as u8;100];
+            let read_c = stream.read(&mut buf).unwrap();
+
+            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
+        });
+
+        let response = client_handle.join().unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn can_use_globs_to_match_to_filename() {
+        let address = "127.0.0.1:11085".parse::<SocketAddr>().unwrap();
+        start_server(address, None);
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+
+            stream.write(HTTP_REQ_GET_README_GLOB_TEST.as_bytes()).unwrap();
+            let mut buf = [0 as u8;100];
+            let read_c = stream.read(&mut buf).unwrap();
+
+            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
+        });
+
+        let response = client_handle.join().unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200"));
     }
 }
