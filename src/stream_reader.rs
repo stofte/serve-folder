@@ -1,21 +1,9 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Error, Read, Write};
 use crate::misc::{HttpError, StreamError};
 use crate::request::HttpRequest;
 
 trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: Read + Write> ReadWrite for T {} 
-
-pub struct StreamReader2<'a> {
-    stream: Box<dyn ReadWrite + 'a>
-}
-
-impl<'a> StreamReader2<'a> {
-    fn new(stream: impl ReadWrite + 'a) -> StreamReader2<'a> {
-        StreamReader2 {
-            stream: Box::new(stream)
-        }
-    }
-}
 
 pub struct StreamReader<'a> {
     buffer_max: usize,
@@ -88,17 +76,21 @@ impl<'a> StreamReader<'a> {
             },
             Err(e) => {
                 self.connected = false;
-                match e.kind() {
-                    std::io::ErrorKind::TimedOut => {
-                        Some(StreamError::ConnectionTimeout)
-                    },
-                    std::io::ErrorKind::ConnectionReset => {
-                        Some(StreamError::ConnectionReset)
-                    }
-                    _ => {
-                        Some(StreamError::Other(e.to_string()))
-                    }
-                }
+                Some(self.map_io_err(e))
+            }
+        }
+    }
+
+    fn map_io_err(&self, e: Error) -> StreamError {
+        match e.kind() {
+            std::io::ErrorKind::TimedOut => {
+                StreamError::ConnectionTimeout
+            },
+            std::io::ErrorKind::ConnectionReset => {
+                StreamError::ConnectionReset
+            }
+            _ => {
+                StreamError::Other(e.to_string())
             }
         }
     }
@@ -193,6 +185,15 @@ impl<'a> StreamReader<'a> {
         }
 
         Ok(req)
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> Result<usize, StreamError>{
+        match self.stream.write(data) {
+            Ok(n) => Ok(n),
+            Err(e) => {
+                Err(self.map_io_err(e))
+            }
+        }
     }
 }
 
@@ -423,10 +424,25 @@ mod tests {
     }
 
     #[test]
-    fn foo() {
-        let address = "127.0.0.1:11081".parse::<SocketAddr>().unwrap();
-        let mut stream = TcpStream::connect(address).unwrap();
+    fn can_write_to_tcpstream() {
+        let (server, server_addr) = create_server_socket(100);
 
-        let s = StreamReader2::new(stream);
+        // in this case, the streamreader acts as "client"
+        let read_handle = thread::spawn(move || {
+            let incoming = server.accept().unwrap();
+            let mut sock = incoming.0;
+            let mut read_buf = [0 as u8;100];
+            let read_c = sock.read(&mut read_buf).unwrap();
+            String::from_utf8_lossy(&read_buf[0..read_c]).into_owned()
+        });
+
+        let socket = TcpStream::connect(server_addr).unwrap();
+        let mut stream = StreamReader::new(socket, 1000);
+        let write_c = stream.write(b"hej mor");
+
+        let read_str = read_handle.join().unwrap();
+
+        assert_eq!(write_c, Ok(7));
+        assert_eq!(read_str, "hej mor".to_owned());
     }
 }
