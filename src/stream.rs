@@ -5,7 +5,7 @@ use crate::request::HttpRequest;
 trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: Read + Write> ReadWrite for T {} 
 
-pub struct StreamReader<'a> {
+pub struct Stream<'a> {
     buffer_max: usize,
     buffer: Vec<u8>,
     stream_buffer: Vec<u8>,
@@ -13,11 +13,11 @@ pub struct StreamReader<'a> {
     connected: bool,
 }
 
-impl<'a> StreamReader<'a> {
-    pub fn new(stream: impl ReadWrite + 'a, buffer_max: usize) -> StreamReader<'a> {
+impl<'a> Stream<'a> {
+    pub fn new(stream: impl ReadWrite + 'a, buffer_max: usize) -> Stream<'a> {
         let mut v = Vec::new();
         v.resize(buffer_max, 0);
-        StreamReader {
+        Stream {
             buffer_max: buffer_max,
             buffer: vec![],
             stream_buffer: vec![0;buffer_max],
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn read_lines() {
-        let mut r = StreamReader::new(wrap_str("hej mor\nmore lines\nxxx"), 1000);
+        let mut r = Stream::new(wrap_str("hej mor\nmore lines\nxxx"), 1000);
 
         assert_eq!(r.next_line(), Ok("hej mor".to_owned()));
         assert_eq!(r.next_line(), Ok("more lines".to_owned()));
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn mixed_newlines() {
         // we only handle optional CR, not other combos
-        let mut r = StreamReader::new(wrap_str("1\r\n2\n3\r\n"), 1000);
+        let mut r = Stream::new(wrap_str("1\r\n2\n3\r\n"), 1000);
 
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Ok("2".to_owned()));
@@ -249,7 +249,7 @@ mod tests {
         // server
         let server_handle = thread::spawn(move || {
             let connection = server.accept().unwrap();
-            let mut r = StreamReader::new(connection.0, 1000);
+            let mut r = Stream::new(connection.0, 1000);
             vec![
                 r.next_line(), 
                 r.next_line(),
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn next_bytes_after_lines() {
-        let mut r = StreamReader::new(wrap_str("1\n2\n333\n444"), 1000);
+        let mut r = Stream::new(wrap_str("1\n2\n333\n444"), 1000);
 
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Ok("2".to_owned()));
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn buffer_overflow() {
         let inp = VecDeque::from((b"0123456789".repeat(101)).to_owned());
-        let mut r = StreamReader::new(inp, 100);
+        let mut r = Stream::new(inp, 100);
 
         assert_eq!(r.next_line(), Err(StreamError::BufferOverflow));
     }
@@ -302,7 +302,7 @@ mod tests {
 
         let server_handle = thread::spawn(move || {
             let connection = server.accept().unwrap();
-            let mut r = StreamReader::new(connection.0, 1000);
+            let mut r = Stream::new(connection.0, 1000);
             vec![
                 r.next_line(), 
                 r.next_line()
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn saves_connection_state_on_error() {
-        let mut r = StreamReader::new(wrap_str("1\r\n"), 1000);
+        let mut r = Stream::new(wrap_str("1\r\n"), 1000);
         
         assert_eq!(r.next_line(), Ok("1".to_owned()));
         assert_eq!(r.next_line(), Err(StreamError::ConnectionClosed));
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn simple_get_request() {
-        let mut r = StreamReader::new(wrap_str(HTTP_REQ_GET), 1000);
+        let mut r = Stream::new(wrap_str(HTTP_REQ_GET), 1000);
         let req = r.next_request().unwrap();
         assert_eq!(req.method, Some(HttpMethod::Get));
     }
@@ -344,7 +344,7 @@ mod tests {
 
         let server_handle = thread::spawn(move || {
             let connection = server.accept().unwrap();
-            let mut r = StreamReader::new(connection.0, 1000);
+            let mut r = Stream::new(connection.0, 1000);
             vec![
                 r.next_request()
             ]
@@ -369,7 +369,7 @@ mod tests {
 
         let server_handle = thread::spawn(move || {
             let connection = server.accept().unwrap();
-            let mut r = StreamReader::new(connection.0, 1000);
+            let mut r = Stream::new(connection.0, 1000);
             vec![
                 r.next_request(),
                 r.next_request(),
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn can_parse_a_realistic_get_request() {
-        let mut reader = StreamReader::new(wrap_str(HTTP_REQ_GET_CHROME_FULL), 1000);
+        let mut reader = Stream::new(wrap_str(HTTP_REQ_GET_CHROME_FULL), 1000);
         let req = reader.next_request();
 
         assert!(req.is_ok());
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn method_not_supported_is_returned() {
-        let mut reader = StreamReader::new(wrap_str(HTTP_REQ_POST), 1000);
+        let mut reader = Stream::new(wrap_str(HTTP_REQ_POST), 1000);
 
         let req1 = reader.next_request();
 
@@ -437,7 +437,7 @@ mod tests {
         });
 
         let socket = TcpStream::connect(server_addr).unwrap();
-        let mut stream = StreamReader::new(socket, 1000);
+        let mut stream = Stream::new(socket, 1000);
         let write_c = stream.write(b"hej mor");
 
         let read_str = read_handle.join().unwrap();

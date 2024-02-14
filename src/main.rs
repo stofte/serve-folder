@@ -13,7 +13,7 @@ pub mod server;
 pub mod request;
 pub mod log;
 pub mod misc;
-pub mod stream_reader;
+pub mod stream;
 pub mod test_data;
 use native::load_system_certificate;
 use server::run_server;

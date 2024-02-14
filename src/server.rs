@@ -11,7 +11,7 @@ use socket2::{Domain, Socket, TcpKeepalive, Type};
 use thiserror::Error;
 use crate::log::{LogCategory, log};
 use crate::request::{HttpRequest, HttpRequestOld};
-use crate::stream_reader::StreamReader;
+use crate::stream::Stream;
 
 const GET_VERB: &str = "GET ";
 const HTTP_VER: &str = " HTTP/1.1";
@@ -674,7 +674,7 @@ struct Server {
 }
 
 fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: ServerConfiguration) {
-    let mut reader = StreamReader::new(stream, 1000);
+    let mut reader = Stream::new(stream, 1000);
     loop {
         match reader.next_request() {
             Ok(request) => {
