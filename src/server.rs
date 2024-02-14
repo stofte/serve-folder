@@ -815,17 +815,17 @@ mod tests {
             None => ServerConfiguration::new(PathBuf::new(), None, None)
         };
         thread::spawn(move || {
-            let server = Server::new(conf, address, None);
+            let mut server = Server::new(conf, address, None);
             server.run();
         });
     }
 
-    fn call_server_and_read_response(address: SocketAddr, request: String) -> String {
+    fn call_server_and_read_response(address: SocketAddr, request: &str) -> String {
+        let request = request.to_owned();
         let client_handle = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
-            // should fetch the readme file of the project
             stream.write(request.as_bytes()).unwrap();
-            let mut buf: [u8; 10000] = [0;10000];
+            let mut buf = [0;10000];
             let read_c = stream.read(&mut buf).unwrap();
             String::from_utf8_lossy(&buf[0..read_c]).into_owned()
         });
@@ -890,7 +890,8 @@ mod tests {
     // }
 
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
-    //#[test_case("xml", "hej mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
+    // TODO: fix me
+    // #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
 
         let address = "127.0.0.1:11082".parse::<SocketAddr>().unwrap();
@@ -898,7 +899,7 @@ mod tests {
         start_server(address, Some(conf));
 
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
-        let response = call_server_and_read_response(address, req);
+        let response = call_server_and_read_response(address, &req);
 
         println!("{:?}", response);
 
@@ -918,17 +919,8 @@ mod tests {
     fn responds_to_get_request() {
         let address = "127.0.0.1:11083".parse::<SocketAddr>().unwrap();
         start_server(address, None);
+        let response = call_server_and_read_response(address, HTTP_REQ_GET_README_MD);
         
-        let client_handle = thread::spawn(move || {
-            let mut stream = TcpStream::connect(address).unwrap();
-            // should fetch the readme file of the project
-            stream.write(HTTP_REQ_GET_README_MD.as_bytes()).unwrap();
-            let mut buf: [u8; 10000] = [0;10000];
-            let read_c = stream.read(&mut buf).unwrap();
-            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
-        });
-
-        let response = client_handle.join().unwrap();
         let mut res_lines = response.lines();
         let response_start_line = res_lines.next().expect("No lines");
         let content_type_header = res_lines
@@ -1001,21 +993,9 @@ mod tests {
     #[test]
     fn can_not_use_globs_if_multiple_matched_files() {
         // We want to be deterministic if we also allow globbing
-
         let address = "127.0.0.1:11084".parse::<SocketAddr>().unwrap();
         start_server(address, None);
-
-        let client_handle = thread::spawn(move || {
-            let mut stream = TcpStream::connect(address).unwrap();
-
-            stream.write(HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST.as_bytes()).unwrap();
-            let mut buf = [0 as u8;100];
-            let read_c = stream.read(&mut buf).unwrap();
-
-            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
-        });
-
-        let response = client_handle.join().unwrap();
+        let response = call_server_and_read_response(address, HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST);
 
         assert!(response.starts_with("HTTP/1.1 404"));
     }
@@ -1024,18 +1004,7 @@ mod tests {
     fn can_use_globs_to_match_to_filename() {
         let address = "127.0.0.1:11085".parse::<SocketAddr>().unwrap();
         start_server(address, None);
-
-        let client_handle = thread::spawn(move || {
-            let mut stream = TcpStream::connect(address).unwrap();
-
-            stream.write(HTTP_REQ_GET_README_GLOB_TEST.as_bytes()).unwrap();
-            let mut buf = [0 as u8;100];
-            let read_c = stream.read(&mut buf).unwrap();
-
-            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
-        });
-
-        let response = client_handle.join().unwrap();
+        let response = call_server_and_read_response(address, HTTP_REQ_GET_README_GLOB_TEST);
 
         assert!(response.starts_with("HTTP/1.1 200"));
     }
