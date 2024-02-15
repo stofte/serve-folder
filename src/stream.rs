@@ -6,6 +6,8 @@ use crate::request::HttpRequest;
 trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: Read + Write> ReadWrite for T {} 
 
+/// Wraps a readable/writeable stream of bytes, 
+/// and provides some conviniece functions for it
 pub struct Stream<'a> {
     buffer_max: usize,
     buffer: Vec<u8>,
@@ -77,21 +79,7 @@ impl<'a> Stream<'a> {
             },
             Err(e) => {
                 self.connected = false;
-                Some(self.map_io_err(e))
-            }
-        }
-    }
-
-    fn map_io_err(&self, e: Error) -> StreamError {
-        match e.kind() {
-            std::io::ErrorKind::TimedOut => {
-                StreamError::ConnectionTimeout
-            },
-            std::io::ErrorKind::ConnectionReset => {
-                StreamError::ConnectionReset
-            }
-            _ => {
-                StreamError::Other(e.to_string())
+                Some(map_io_err(e))
             }
         }
     }
@@ -188,11 +176,12 @@ impl<'a> Stream<'a> {
         Ok(req)
     }
 
+
     pub fn write_all(&mut self, data: &[u8]) -> Result<(), StreamError>{
         match self.stream.write_all(data) {
             Ok(()) => Ok(()),
             Err(e) => {
-                Err(self.map_io_err(e))
+                Err(map_io_err(e))
             }
         }
     }
@@ -201,8 +190,22 @@ impl<'a> Stream<'a> {
         match std::io::copy(br, &mut self.stream) {
             Ok(n) => Ok(n),
             Err(e) => {
-                Err(self.map_io_err(e))
+                Err(map_io_err(e))
             }
+        }
+    }
+}
+
+fn map_io_err(e: Error) -> StreamError {
+    match e.kind() {
+        std::io::ErrorKind::TimedOut => {
+            StreamError::ConnectionTimeout
+        },
+        std::io::ErrorKind::ConnectionReset => {
+            StreamError::ConnectionReset
+        }
+        _ => {
+            StreamError::Other(e.to_string())
         }
     }
 }
