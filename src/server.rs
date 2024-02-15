@@ -16,7 +16,7 @@ use crate::stream::Stream;
 
 #[derive(Clone)]
 pub struct ServerConfiguration {
-    pub www_root: PathBuf,
+    www_root: PathBuf,
     default_documents: Option<Vec<String>>,
     mime_types: Option<Vec<(String, String)>>,
     /// The max size of the underlying Stream buffer when reciving.
