@@ -696,6 +696,8 @@ struct Server {
     conf: ServerConfiguration,
     address: SocketAddr,
     tls_acceptor: Option<Arc<TlsAcceptor>>,
+    bind: Option<SocketAddr>,
+    socket: Option<Socket>,
 }
 
 fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: ServerConfiguration) {
@@ -762,16 +764,30 @@ impl Server {
             conf,
             address,
             tls_acceptor,
+            bind: None,
+            socket: None,
         }
     }
     pub fn protocol(&self) -> String {
         match self.tls_acceptor { Some(_) => "https".to_owned(), None => "http".to_owned() }
     }
-    pub fn run(&self) {
+    pub fn bind(&mut self) -> Option<SocketAddr> {
         match bind_server_socket(self.address, 2000) {
-            Ok(sock) => {
-                let listener: TcpListener = sock.into();
-        
+            Ok(s) => {
+                let sock_addr = s.local_addr().unwrap().as_socket().unwrap();
+                self.socket = Some(s);
+                Some(sock_addr)
+            },
+            Err(e) => {
+                self.socket = None;
+                None
+            }
+        }
+    }
+    pub fn run(&mut self) {
+        match self.socket.take() {
+            Some(s) => {
+                let listener: TcpListener = s.into();
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
@@ -786,7 +802,7 @@ impl Server {
                     };
                 }
             },
-            Err(e) => {
+            None => {
                 // todo log err
             }
         }
@@ -809,15 +825,16 @@ mod tests {
         Arc::new(Mutex::new(vec))
     }
 
-    fn start_server(address: SocketAddr, conf: Option<ServerConfiguration>) {
+    fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
         let conf = match conf {
             Some(c) => c,
             None => ServerConfiguration::new(PathBuf::new(), None, None)
         };
-        thread::spawn(move || {
-            let mut server = Server::new(conf, address, None);
-            server.run();
-        });
+        let address = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+        let mut server = Server::new(conf, address, None);
+        let addr = server.bind().unwrap();
+        thread::spawn(move || server.run());
+        addr
     }
 
     fn call_server_and_read_response(address: SocketAddr, request: &str) -> String {
@@ -891,13 +908,10 @@ mod tests {
     // }
 
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
-    // TODO: fix me
-    // #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
+    #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
-
-        let address = "127.0.0.1:11082".parse::<SocketAddr>().unwrap();
         let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
-        start_server(address, Some(conf));
+        let address = start_server(Some(conf));
 
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
         let response = call_server_and_read_response(address, &req);
@@ -918,8 +932,7 @@ mod tests {
 
     #[test]
     fn responds_to_get_request() {
-        let address = "127.0.0.1:11083".parse::<SocketAddr>().unwrap();
-        start_server(address, None);
+        let address = start_server(None);
         let response = call_server_and_read_response(address, HTTP_REQ_GET_README_MD);
         
         let mut res_lines = response.lines();
@@ -946,14 +959,11 @@ mod tests {
 
         // Mime type should also be included
         assert_eq!("text/plain", content_type);
-
-        // assert!(response.starts_with("HTTP/1.1 200"));
     }
 
     #[test]
     fn connection_is_closed_after_reading_unpported_method() {
-        let address = "127.0.0.1:11081".parse::<SocketAddr>().unwrap();
-        start_server(address, None);
+        let address = start_server(None);
 
         let client_handle = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
@@ -994,8 +1004,8 @@ mod tests {
     #[test]
     fn can_not_use_globs_if_multiple_matched_files() {
         // We want to be deterministic if we also allow globbing
-        let address = "127.0.0.1:11084".parse::<SocketAddr>().unwrap();
-        start_server(address, None);
+        let address = start_server(None);
+
         let response = call_server_and_read_response(address, HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST);
 
         assert!(response.starts_with("HTTP/1.1 404"));
@@ -1003,8 +1013,8 @@ mod tests {
 
     #[test]
     fn can_use_globs_to_match_to_filename() {
-        let address = "127.0.0.1:11085".parse::<SocketAddr>().unwrap();
-        start_server(address, None);
+        let address = start_server(None);
+
         let response = call_server_and_read_response(address, HTTP_REQ_GET_README_GLOB_TEST);
 
         assert!(response.starts_with("HTTP/1.1 200"));
