@@ -130,25 +130,20 @@ fn main() {
 
     let wwwroot = get_current_dir();
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
-    let conf = ServerConfiguration::new(wwwroot, args.default_documents, args.mime_types, None);
+    let conf = ServerConfiguration::new(wwwroot.clone(), args.default_documents, args.mime_types, None);
 
     let mut server = Server::new(conf, addr, tls_acceptor);
 
-    let server_bind_address = server.bind();
-
-    println!("Server address: {:?}", server_bind_address);
+    match server.bind() {
+        Ok(addr) => {
+            print_server_addr(&addr, protocol, &wwwroot);
+        },
+        Err(err) => {
+            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
+        }
+    };
 
     server.run();
-
-    // match bind_server_socket(addr) {
-    //     Ok(socket) => {
-    //         print_server_addr(&socket, protocol, &conf.www_root);
-    //         run_server(socket.into(), &tls_acceptor, conf);
-    //     },
-    //     Err(err) => {
-    //         log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
-    //     }
-    // }
 }
 
 fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {
@@ -163,8 +158,7 @@ fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {
     Ok(socket)
 }
 
-fn print_server_addr(sock: &Socket, protocol: &str, base_dir: &PathBuf) {
-    let local_addr = sock.local_addr().unwrap().as_socket().unwrap();
+fn print_server_addr(local_addr: &SocketAddr, protocol: &str, base_dir: &PathBuf) {
     let mut local_str = local_addr.to_string();
     if local_str.starts_with(DEFAULT_OPTIONS_BIND_VALUE) {
         // While we can bind to 0.0.0.0 to match all interfaces, this does not work when connecting,

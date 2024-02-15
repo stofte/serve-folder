@@ -721,10 +721,9 @@ fn handle_connection3(stream: impl Read + Write, conf: ServerConfiguration) {
                         handle_http_error4(&mut stream, 404, "Not Found", None);
                     }
                 };
-
             },
-            Err(_err) => {
-                match _err {
+            Err(err) => {
+                match err {
                     HttpError::StreamError(StreamError::BufferOverflow) => {
                         handle_http_error4(&mut stream, 400, "", None);
                     },
@@ -732,12 +731,9 @@ fn handle_connection3(stream: impl Read + Write, conf: ServerConfiguration) {
                         handle_http_error4(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
                     },
                     _ => {
-
+                        handle_http_error4(&mut stream, 500, "", None);
                     }
                 };
-                
-                // todo implement properly
-                // stream.write_all("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
                 // close connection by returning from function, causing
                 // the thread to exit and the connection to be dropped
                 break;
@@ -784,35 +780,28 @@ impl Server {
             socket: None,
         }
     }
+    
     pub fn protocol(&self) -> String {
         match self.tls_acceptor { Some(_) => "https".to_owned(), None => "http".to_owned() }
     }
-    pub fn bind(&mut self) -> Option<SocketAddr> {
-        match bind_server_socket(self.address, 2000) {
-            Ok(s) => {
-                let sock_addr = s.local_addr().unwrap().as_socket().unwrap();
-                self.socket = Some(s);
-                Some(sock_addr)
-            },
-            Err(e) => {
-                self.socket = None;
-                None
-            }
-        }
+
+    pub fn bind(&mut self) -> Result<SocketAddr, std::io::Error> {
+        let socket = bind_server_socket(self.address, 2000)?;
+        let local_addr = socket
+            .local_addr().expect("socket was not bound")
+            .as_socket().expect("socket address was unexpected type");
+        self.socket = Some(socket);
+        Ok(local_addr)
     }
+
     pub fn run(&mut self) {
         match self.socket.take() {
             Some(s) => {
                 let listener: TcpListener = s.into();
                 for stream in listener.incoming() {
-                    println!("server.rs: received incoming conn!");
                     match stream {
                         Ok(stream) => {
                             setup_connection3(stream, &self.tls_acceptor, self.conf.clone());
-                            // let conf = self.conf.clone();
-                            // let read_stream = stream.try_clone().unwrap();
-                            // let write_stream = stream.try_clone().unwrap();
-                            // thread::spawn(|| handle_connection3(read_stream, write_stream, conf));
                         },
                         Err(..) => {
                             // todo log err
