@@ -19,7 +19,7 @@ use native::load_system_certificate;
 use server::run_server;
 use log::{LogCategory, log};
 
-use crate::server::ServerConfiguration;
+use crate::server::{Server, ServerConfiguration};
 
 const DEFAULT_OPTIONS_BIND_VALUE: &str = "0.0.0.0";
 
@@ -130,17 +130,25 @@ fn main() {
 
     let wwwroot = get_current_dir();
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
-    let conf = ServerConfiguration::new(wwwroot, args.default_documents, args.mime_types);
+    let conf = ServerConfiguration::new(wwwroot, args.default_documents, args.mime_types, None);
 
-    match bind_server_socket(addr) {
-        Ok(socket) => {
-            print_server_addr(&socket, protocol, &conf.www_root);
-            run_server(socket.into(), &tls_acceptor, conf);
-        },
-        Err(err) => {
-            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
-        }
-    }
+    let mut server = Server::new(conf, addr, tls_acceptor);
+
+    let server_bind_address = server.bind();
+
+    println!("Server address: {:?}", server_bind_address);
+
+    server.run();
+
+    // match bind_server_socket(addr) {
+    //     Ok(socket) => {
+    //         print_server_addr(&socket, protocol, &conf.www_root);
+    //         run_server(socket.into(), &tls_acceptor, conf);
+    //     },
+    //     Err(err) => {
+    //         log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
+    //     }
+    // }
 }
 
 fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {

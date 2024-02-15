@@ -10,6 +10,7 @@ use phf::phf_map;
 use socket2::{Domain, Socket, TcpKeepalive, Type};
 use thiserror::Error;
 use crate::log::{LogCategory, log};
+use crate::misc::{HttpError, StreamError};
 use crate::request::{HttpRequest, HttpRequestOld};
 use crate::stream::Stream;
 
@@ -22,14 +23,20 @@ pub struct ServerConfiguration {
     pub www_root: PathBuf,
     default_documents: Option<Vec<String>>,
     mime_types: Option<Vec<(String, String)>>,
+    /// The max size of the underlying Stream buffer when reciving.
+    /// This limits the incoming request in various ways:
+    /// 1. The length of any single line in the header
+    /// 2. The size of any message body
+    buffer_size: usize,
 }
 
 impl ServerConfiguration {
-    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>) -> ServerConfiguration {
+    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>, buffer_size: Option<usize>) -> ServerConfiguration {
         ServerConfiguration {
             www_root,
             default_documents,
             mime_types,
+            buffer_size: buffer_size.unwrap_or(10000)
         }
     }
 }
@@ -165,7 +172,7 @@ fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfig
     }
 }
 
-fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, conf: &ServerConfiguration, stream: &mut Stream) -> String {
+fn handle_response3(stream: &mut Stream, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
     let path = &request_info.file_path;
     let f_wrapped = File::open(&path);
     if f_wrapped.is_ok() {
@@ -197,7 +204,7 @@ fn handle_response3(writer: &mut impl Write, request_info: &RequestedFileInfo, c
         }
     } else {
         let status = format!("500 Internal Server Error");
-        handle_http_error3(writer, 500, "Internal Server Error");
+        handle_http_error4(stream, 500, "Internal Server Error", None);
         log(LogCategory::Info, &status);
         status
     }
@@ -289,25 +296,24 @@ fn handle_http_error3(writer: &mut impl Write, code: u32, body: &str) {
 }
 
 
-fn handle_http_error4(writer: &mut Stream, code: u32, body: &str) {
+fn handle_http_error4(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
     let status = match code {
+        400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "Internal Server Error"
     };
-    let header = &format!("HTTP/1.1 {} {}", code, status);
-    let content_type = "Content-Type: text/plain";
-    let content_length = &format!("Content-Length: {}", body.len());
+    let header = format!("HTTP/1.1 {} {}", code, status);
+    let content_type = "Content-Type: text/plain".to_owned();
+    let content_length = format!("Content-Length: {}", body.len());
 
-    let lines = [
-        header,
-        content_type,
-        content_length,
-        "",
-        body
-    ].join("\r\n");
+    let mut other_headers = headers.unwrap_or_else(|| Vec::new() as Vec<String>);
 
-    writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
+    let mut lines = [header].to_vec();
+    lines.append(&mut other_headers);
+    lines.append(&mut [content_type, content_length, "".to_owned(), body.to_owned()].to_vec());
+
+    stream.write_all(lines.join("\r\n").as_bytes()).unwrap_or_else(|err| {
         // todo impl default formatter?
         log(LogCategory::Warning, &format!("Failed writing error response: {:?}", err))
     });
@@ -692,7 +698,7 @@ pub fn bind_server_socket(addr: SocketAddr, timeout_ms: u64) -> Result<Socket, s
     Ok(socket)
 }
 
-struct Server {
+pub struct Server {
     conf: ServerConfiguration,
     address: SocketAddr,
     tls_acceptor: Option<Arc<TlsAcceptor>>,
@@ -700,26 +706,38 @@ struct Server {
     socket: Option<Socket>,
 }
 
-fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: ServerConfiguration) {
-    let mut stream = Stream::new(stream, 1000);
+fn handle_connection3(stream: impl Read + Write, conf: ServerConfiguration) {
+    let mut stream = Stream::new(stream, conf.buffer_size);
     loop {
         match stream.next_request() {
             Ok(request) => {
                 // todo handle the server response
                 match process_request3(&request, &conf) {
                     Ok(file_info) => {
-                        handle_response3(&mut write, &file_info, &conf, &mut stream);
+                        handle_response3(&mut stream, &file_info, &conf);
                     },
                     Err(err) => {
                         log(LogCategory::Info, &format!("Error: {:?}", err));
-                        handle_http_error3(&mut write, 404, "Not Found");
+                        handle_http_error4(&mut stream, 404, "Not Found", None);
                     }
                 };
 
             },
             Err(_err) => {
+                match _err {
+                    HttpError::StreamError(StreamError::BufferOverflow) => {
+                        handle_http_error4(&mut stream, 400, "", None);
+                    },
+                    HttpError::MethodNotSupported(..) => {
+                        handle_http_error4(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
+                    },
+                    _ => {
+
+                    }
+                };
+                
                 // todo implement properly
-                write.write("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
+                // stream.write_all("HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\n\r\n".as_bytes()).unwrap();
                 // close connection by returning from function, causing
                 // the thread to exit and the connection to be dropped
                 break;
@@ -729,14 +747,12 @@ fn handle_connection3(stream: impl Read + Write, mut write: impl Write, conf: Se
 }
 
 fn setup_connection3(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
-    let read_stream = stream.try_clone().unwrap();
-    let write_stream = stream.try_clone().unwrap();    
     match &tls_acceptor {
         Some(acceptor) => {
             match acceptor.accept(stream) {
                 Ok(stream) => {
-                    let s = Arc::new(Mutex::new(stream));
-                    thread::spawn(move || handle_connection3(read_stream, write_stream, conf));
+                    // let s = Arc::new(Mutex::new(stream));
+                    thread::spawn(move || handle_connection3(stream, conf));
                 },
                 Err(e) => {
                     match &e {
@@ -751,8 +767,8 @@ fn setup_connection3(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>,
         },
         None => {
             thread::spawn(move || {
-                let s = Arc::new(Mutex::new(stream));
-                handle_connection3(read_stream, write_stream, conf);
+                // let s = Arc::new(Mutex::new(stream));
+                handle_connection3(stream, conf);
             });
         }
     }
@@ -789,12 +805,14 @@ impl Server {
             Some(s) => {
                 let listener: TcpListener = s.into();
                 for stream in listener.incoming() {
+                    println!("server.rs: received incoming conn!");
                     match stream {
                         Ok(stream) => {
-                            let conf = self.conf.clone();
-                            let read_stream = stream.try_clone().unwrap();
-                            let write_stream = stream.try_clone().unwrap();
-                            thread::spawn(|| handle_connection3(read_stream, write_stream, conf));
+                            setup_connection3(stream, &self.tls_acceptor, self.conf.clone());
+                            // let conf = self.conf.clone();
+                            // let read_stream = stream.try_clone().unwrap();
+                            // let write_stream = stream.try_clone().unwrap();
+                            // thread::spawn(|| handle_connection3(read_stream, write_stream, conf));
                         },
                         Err(..) => {
                             // todo log err
@@ -821,7 +839,7 @@ mod tests {
     fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
         let conf = match conf {
             Some(c) => c,
-            None => ServerConfiguration::new(PathBuf::new(), None, None)
+            None => ServerConfiguration::new(PathBuf::new(), None, None, None)
         };
         let address = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         let mut server = Server::new(conf, address, None);
@@ -861,7 +879,7 @@ mod tests {
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
     #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]));
+        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None);
         let address = start_server(Some(conf));
 
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -987,7 +1005,7 @@ mod tests {
         use std::env::current_dir;
 
         let default_docs = Some(vec![default_doc.to_owned()]);
-        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None);
+        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None, None);
         let address = start_server(Some(conf));
 
         let request = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -1003,5 +1021,18 @@ mod tests {
         let response = call_server_and_read_response(address, HTTP_REQ_GET_NON_EXISTENT_FILE);
 
         assert!(response.starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn bad_request_status_code_if_incoming_msg_is_too_large_for_internal_stream_buffer() {
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None, Some(100));
+        let address = start_server(Some(conf));
+
+        let request = format!("GET / HTTP/1.1\r\nSome-Header: {}\r\n\r\n", "0123456789".repeat(100));
+        let response = call_server_and_read_response(address, &request);
+
+        println!("RESPONSE:\n{response}");
+
+        assert!(response.starts_with("HTTP/1.1 400"));
     }
 }
