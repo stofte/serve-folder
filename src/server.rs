@@ -1,5 +1,5 @@
 use std::io::{BufReader, Read, Write};
-use std::fs::File;
+use std::fs::{self, File};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +24,7 @@ pub struct ServerConfiguration {
     /// 1. The length of any single line in the header
     /// 2. The size of any message body
     buffer_size: usize,
+    directory_browsing: bool,
 }
 
 pub struct Server {
@@ -34,18 +35,21 @@ pub struct Server {
 }
 
 impl ServerConfiguration {
-    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>, buffer_size: Option<usize>) -> ServerConfiguration {
+    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>, buffer_size: Option<usize>, directory_browsing: bool) -> ServerConfiguration {
         ServerConfiguration {
             www_root,
             default_documents,
             mime_types,
-            buffer_size: buffer_size.unwrap_or(10000)
+            buffer_size: buffer_size.unwrap_or(10000),
+            directory_browsing
         }
     }
 }
 
 #[derive(Error, Debug)]
 enum Error {
+    #[error("Path is directory")]
+    PathIsDirectory,
     #[error("Failed to parse path (io)")]
     IOFailed(#[from] std::io::Error),
     #[error("Failed to parse path (glob)")]
@@ -138,12 +142,11 @@ fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option
     });
 }
 
-fn process_request(request: &HttpRequest, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+fn translate_target_to_filepath(target: &Option<String>, conf: &ServerConfiguration) -> Result<PathBuf, Error> {
     use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
-    use glob::glob;
-    
-    let target_path = request.target.as_ref().unwrap();
+
+    let target_path = target.as_ref().unwrap();
     let parse_url = String::from("http://localhost") + &target_path;
     let cur_dir = &conf.www_root;
     let fs_path = match url::Url::parse(&parse_url) {
@@ -163,8 +166,14 @@ fn process_request(request: &HttpRequest, conf: &ServerConfiguration) -> Result<
         Err(_) => Err(Error::PathParsingFailed)
     }?;
 
+    Ok(fs_path.into_path_buf())
+}
+
+fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+    use glob::glob;
+    
     let mut file_size = 0;
-    let mut file_path = fs_path.into_path_buf();
+    let mut file_path = file_path.to_owned();
 
     match std::fs::metadata(&file_path) {
         Ok(metadata) => {
@@ -181,8 +190,12 @@ fn process_request(request: &HttpRequest, conf: &ServerConfiguration) -> Result<
                         Ok(())
                     },
                     None => {
-                        log(LogCategory::Info, "Path is directory");
-                        Err(Error::PathMustBeFile)
+                        if conf.directory_browsing {
+                            Err(Error::PathIsDirectory)
+                        } else {
+                            log(LogCategory::Info, "Path is directory");
+                            Err(Error::PathMustBeFile)
+                        }
                     }
                 }
             } else {
@@ -238,6 +251,33 @@ fn process_request(request: &HttpRequest, conf: &ServerConfiguration) -> Result<
         file_size: file_size,
         file_path: file_path,
     })
+}
+
+fn process_directory_listing(path: &PathBuf, stream: &mut Stream) {
+    let dir = fs::read_dir(path).expect("path was not a directory");
+    let initial = [
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/html",
+        "Transfer-Encoding: chunked",
+        "",
+        "6",
+        "<ul>\r\n",
+        ""
+    ].join("\r\n");
+    stream.write_all(initial.as_bytes()).unwrap();
+    // todo more stuff in here. possibly chunked output encoding ... ?
+    for path in dir {
+        let str = format!("<li>{}</li>\r\n", path.unwrap().path().display());
+        let chunk = format!("{:x}\r\n{}\r\n", str.len(), str);
+        stream.write_all(chunk.as_bytes()).unwrap();
+    }
+    let end = [
+        "7",
+        "</ul>\r\n",
+        "0",
+        ""
+    ].join("\r\n");
+    stream.write_all(end.as_bytes()).unwrap();
 }
 
 fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>, www_root: &PathBuf) -> Option<PathBuf> {
@@ -296,15 +336,33 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
         match stream.next_request() {
             Ok(request) => {
                 // todo handle the server response
-                match process_request(&request, &conf) {
-                    Ok(file_info) => {
-                        handle_response(&mut stream, &file_info);
+                match translate_target_to_filepath(&request.target, &conf) {
+                    Ok(file_path) => {
+                        match process_request(&file_path, &conf) {
+                            Ok(file_info) => {
+                                handle_response(&mut stream, &file_info);
+                            },
+                            Err(err) => {
+                                match err {
+                                    Error::PathIsDirectory => {
+                                        // path is directory is only if directory_browsing is enabled
+                                        assert!(conf.directory_browsing);
+                                        process_directory_listing(&file_path, &mut stream);
+                                    },
+                                    _ => {
+                                        log(LogCategory::Info, &format!("Error: {:?}", err));
+                                        handle_http_error(&mut stream, 404, "Not Found", None);
+                                    }
+                                }
+                            }
+                        };
                     },
                     Err(err) => {
-                        log(LogCategory::Info, &format!("Error: {:?}", err));
+                        // todo: this possibly needs to be bad request?
                         handle_http_error(&mut stream, 404, "Not Found", None);
                     }
-                };
+                }
+                
             },
             Err(err) => {
                 match err {
@@ -411,7 +469,7 @@ mod tests {
     fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
         let conf = match conf {
             Some(c) => c,
-            None => ServerConfiguration::new(PathBuf::new(), None, None, None)
+            None => ServerConfiguration::new(PathBuf::new(), None, None, None, false)
         };
         let address = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         let mut server = Server::new(conf, address, None);
@@ -451,7 +509,7 @@ mod tests {
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
     #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None, false);
         let address = start_server(Some(conf));
 
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -577,7 +635,7 @@ mod tests {
         use std::env::current_dir;
 
         let default_docs = Some(vec![default_doc.to_owned()]);
-        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None, None);
+        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None, None, false);
         let address = start_server(Some(conf));
 
         let request = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -597,7 +655,7 @@ mod tests {
 
     #[test]
     fn bad_request_status_code_if_incoming_msg_is_too_large_for_internal_stream_buffer() {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None, Some(100));
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None, Some(100), false);
         let address = start_server(Some(conf));
 
         let request = format!("GET / HTTP/1.1\r\nSome-Header: {}\r\n\r\n", "0123456789".repeat(100));

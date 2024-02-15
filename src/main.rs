@@ -52,6 +52,10 @@ struct Args {
     #[arg(short('m'), long, value_parser = parse_key_val::<String, String>)]
     mime_types: Option<Vec<(String, String)>>,
 
+    /// Enables directory browsing
+    #[arg(short('i'), long, action)]
+    index_browsing: bool,
+
     /// Web root directory. Defaults to the current directory if not set
     wwwroot: Option<PathBuf>,
 }
@@ -128,7 +132,7 @@ fn main() {
 
     let wwwroot = get_current_dir();
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
-    let conf = ServerConfiguration::new(wwwroot.clone(), args.default_documents, args.mime_types, None);
+    let conf = ServerConfiguration::new(wwwroot.clone(), args.default_documents, args.mime_types, None, args.index_browsing);
 
     let mut server = Server::new(conf, addr, tls_acceptor);
 
