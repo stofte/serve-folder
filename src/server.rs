@@ -1,8 +1,8 @@
-use std::io::{BufReader, BufWriter, Read, Write, BufRead};
+use std::io::{BufReader, Read, Write};
 use std::fs::File;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use native_tls::{TlsAcceptor, HandshakeError};
@@ -11,12 +11,8 @@ use socket2::{Domain, Socket, TcpKeepalive, Type};
 use thiserror::Error;
 use crate::log::{LogCategory, log};
 use crate::misc::{HttpError, StreamError};
-use crate::request::{HttpRequest, HttpRequestOld};
+use crate::request::HttpRequest;
 use crate::stream::Stream;
-
-const GET_VERB: &str = "GET ";
-const HTTP_VER: &str = " HTTP/1.1";
-const TCP_BUFFER_SIZE: usize = 30;
 
 #[derive(Clone)]
 pub struct ServerConfiguration {
@@ -28,6 +24,13 @@ pub struct ServerConfiguration {
     /// 1. The length of any single line in the header
     /// 2. The size of any message body
     buffer_size: usize,
+}
+
+pub struct Server {
+    conf: ServerConfiguration,
+    address: SocketAddr,
+    tls_acceptor: Option<Arc<TlsAcceptor>>,
+    socket: Option<Socket>,
 }
 
 impl ServerConfiguration {
@@ -43,8 +46,6 @@ impl ServerConfiguration {
 
 #[derive(Error, Debug)]
 enum Error {
-    #[error("Unsupported method")]
-    UnsupportedMethod,
     #[error("Failed to parse path (io)")]
     IOFailed(#[from] std::io::Error),
     #[error("Failed to parse path (glob)")]
@@ -76,103 +77,7 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "xml" => "application/xml"
 };
 
-pub fn run_server(listener: TcpListener, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
-    let conf_arc = Arc::new(conf);
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => setup_connection(stream, &tls_acceptor, conf_arc.clone()),
-            Err(_) => () // connection failed?
-        }
-    }
-}
-
-fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: Arc<ServerConfiguration>) {
-    use std::thread;
-    match &tls_acceptor {
-        Some(acceptor) => {
-            match acceptor.accept(stream) {
-                Ok(stream) => {
-                    let s = Arc::new(Mutex::new(stream));
-                    thread::spawn(move || handle_connection(&s, &conf));
-                },
-                Err(e) => {
-                    match &e {
-                        HandshakeError::Failure(ee) => {
-                            // Likely because of self-signed not being in trusted roots
-                            log(LogCategory::Error, &format!("{}", ee));
-                        },
-                        _ => ()
-                    }
-                }
-            }
-        },
-        None => {
-            thread::spawn(move || {
-                let s = Arc::new(Mutex::new(stream));
-                handle_connection(&s, &conf);
-            });
-        }
-    }
-}
-
-fn handle_connection(stream: &Arc<Mutex<impl Read + Write>>, conf: &ServerConfiguration) {
-    use std::time::Instant;
-
-    let mut last_data = Instant::now();
-    let mut req = HttpRequestOld::new();
-    let mut data = [0; TCP_BUFFER_SIZE];
-    loop {
-        let res = stream.lock().unwrap().read(&mut data);
-        match res {
-            Ok(read_count) => {
-                if read_count == 0 {
-                    break;
-                } else {
-                    last_data = Instant::now();
-                    let done = req.read_stream(&data, read_count);
-                    if done {
-                        // parsed full http request here
-                        println!("{:?} received:\n{:?}", std::thread::current().id(), req);
-                        // figure out what file to return
-                        match process_request2(&req, conf) {
-                            Ok(file_info) => {
-                                handle_response2(&stream, &file_info, conf);
-                            },
-                            Err(err) => {
-                                log(LogCategory::Info, &format!("Error: {:?}", err));
-                                handle_http_error(&stream, 404, "Not Found");
-                            }
-                        };
-                        // TODO: if we did not receive "Connection: Keep-Alive", 
-                        // we should also break here, and close down the connection
-                        if req.connection_keep_alive() {
-                            req = HttpRequestOld::new();
-                            continue;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            },
-            Err(e) => {
-                match e.kind() {
-                    std::io::ErrorKind::TimedOut => {
-                        if last_data.elapsed().as_secs() > 10 {
-                            println!("No data in 10 seconds, termining: {:?} >> {:?}", last_data, Instant::now());
-                            break;
-                        }
-                    },
-                    _ => {
-                        println!("Other: read err: {:?}", e);
-                        break;
-                    }
-                }
-            }
-        };
-    }
-}
-
-fn handle_response3(stream: &mut Stream, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
+fn handle_response(stream: &mut Stream, request_info: &RequestedFileInfo) -> String {
     let path = &request_info.file_path;
     let f_wrapped = File::open(&path);
     if f_wrapped.is_ok() {
@@ -204,99 +109,13 @@ fn handle_response3(stream: &mut Stream, request_info: &RequestedFileInfo, conf:
         }
     } else {
         let status = format!("500 Internal Server Error");
-        handle_http_error4(stream, 500, "Internal Server Error", None);
+        handle_http_error(stream, 500, "Internal Server Error", None);
         log(LogCategory::Info, &status);
         status
     }
 }
 
-fn handle_response2(writer: &Arc<Mutex<impl Write>>, request_info: &RequestedFileInfo, conf: &ServerConfiguration) -> String {
-    let path = &request_info.file_path;
-    let f_wrapped = File::open(&path);
-    if f_wrapped.is_ok() {
-        // File could be opened
-        let f = f_wrapped.unwrap();
-        let mut br = BufReader::new(f);
-        let lines = [
-            "HTTP/1.1 200 OK",
-            "Cache-Control: no-store",
-            &format!("Content-Type: {}", &request_info.mime_type),
-            &format!("Content-Length: {}\r\n\r\n", &request_info.file_size),
-        ].join("\r\n");
-
-        // We dump the file directly into the response.
-        // Ideally we would ensure crlf as newlines, etc.
-        if writer.lock().unwrap().write_all(lines.as_bytes()).is_ok() {
-            // All headers written, try to write file
-            let mut foo = writer.lock().unwrap();
-            if std::io::copy(&mut br, &mut *foo).is_ok() {
-                format!("{} ({} bytes)", path.to_string_lossy(), request_info.file_size)
-            } else {
-                let status = format!("Failed to write contents to response");
-                log(LogCategory::Warning, &status);
-                status
-            }
-        } else {
-            let status = format!("Failed to write headers to response");
-            log(LogCategory::Warning, &status);
-            status
-        }
-    } else {
-        let status = format!("500 Internal Server Error");
-        handle_http_error(writer, 500, "Internal Server Error");
-        log(LogCategory::Info, &status);
-        status
-    }
-}
-
-fn handle_http_error(writer: &Arc<Mutex<impl Write>>, code: u32, body: &str) {
-    let status = match code {
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Internal Server Error"
-    };
-    let header = &format!("HTTP/1.1 {} {}", code, status);
-    let content_type = "Content-Type: text/plain";
-    let content_length = &format!("Content-Length: {}", body.len());
-
-    let lines = [
-        header,
-        content_type,
-        content_length,
-        "",
-        body
-    ].join("\r\n");
-
-    writer.lock().unwrap().write_all(lines.as_bytes()).unwrap_or_else(|err| {
-        log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
-    });
-}
-
-fn handle_http_error3(writer: &mut impl Write, code: u32, body: &str) {
-    let status = match code {
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Internal Server Error"
-    };
-    let header = &format!("HTTP/1.1 {} {}", code, status);
-    let content_type = "Content-Type: text/plain";
-    let content_length = &format!("Content-Length: {}", body.len());
-
-    let lines = [
-        header,
-        content_type,
-        content_length,
-        "",
-        body
-    ].join("\r\n");
-
-    writer.write_all(lines.as_bytes()).unwrap_or_else(|err| {
-        log(LogCategory::Warning, &format!("Failed writing error response: {}", err))
-    });
-}
-
-
-fn handle_http_error4(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
+fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
     let status = match code {
         400 => "Bad Request",
         404 => "Not Found",
@@ -319,7 +138,7 @@ fn handle_http_error4(stream: &mut Stream, code: u32, body: &str, headers: Optio
     });
 }
 
-fn process_request3(request: &HttpRequest, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+fn process_request(request: &HttpRequest, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
     use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
     use glob::glob;
@@ -344,233 +163,6 @@ fn process_request3(request: &HttpRequest, conf: &ServerConfiguration) -> Result
         Err(_) => Err(Error::PathParsingFailed)
     }?;
 
-    let mut file_size = 0;
-    let mut file_path = fs_path.into_path_buf();
-
-    match std::fs::metadata(&file_path) {
-        Ok(metadata) => {
-            if metadata.is_file() {
-                // All is good, direct file hit
-                file_size = metadata.len();
-                Ok(())
-            } else if metadata.is_dir() {
-                // Check if we have a default doc to return instead
-                match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
-                    Some(p) => {
-                        file_size = p.metadata()?.len();
-                        file_path = p;
-                        Ok(())
-                    },
-                    None => {
-                        log(LogCategory::Info, "Path is directory");
-                        Err(Error::PathMustBeFile)
-                    }
-                }
-            } else {
-                log(LogCategory::Info, "Path not handled");
-                Err(Error::PathMustBeFile)
-            }
-        },
-        Err(err) => {
-            // Nothing was found, see if a glob can find the file regardle
-            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))?;
-            
-            let glob_match_ok = match matches.next() {
-                Some(file) => {
-                    match file {
-                        Ok(p) => {
-                            match std::fs::metadata(p.clone()) {
-                                Ok(metadata) => {
-                                    if metadata.is_file() {
-                                        file_size = metadata.len();
-                                        file_path = p;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                },
-                                Err(..) => false
-                            }
-                        },
-                        Err(..) => false
-                    }
-                },
-                None => false
-            };
-
-            // We only want one match
-            let single_match = glob_match_ok && matches.next().is_none();
-            if single_match {
-                // One matched file
-                Ok(())
-            } else if glob_match_ok {
-                // We must have had multiple matches
-                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err));
-                Err(Error::PathMustBeFile)
-            } else {
-                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err));
-                Err(Error::PathMetadataFailed)
-            }
-        }
-    }?;
-
-    Ok(RequestedFileInfo {
-        mime_type: get_mimetype(&file_path, &conf.mime_types).to_string(),
-        file_size: file_size,
-        file_path: file_path,
-    })
-}
-
-fn process_request2(request: &HttpRequestOld, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
-    use std::path::MAIN_SEPARATOR_STR;
-    use normpath::PathExt;
-    use glob::glob;
-    
-    let target_path = request.target.as_ref().unwrap();
-    let parse_url = String::from("http://localhost") + &target_path;
-    let cur_dir = &conf.www_root;
-    let fs_path = match url::Url::parse(&parse_url) {
-        Ok(url) => {
-            let mut url_path = url.path().replace("/", MAIN_SEPARATOR_STR);
-            // rust's fs code gets confused if we join a "\", as this
-            // will just change the directory to root, eg "C:\"
-            url_path = url_path[1..].to_owned();
-            let path_buf = Path::new(&cur_dir)
-                .join(url_path)
-                .normalize_virtually(); // This does not hit the fs, which is what we want
-            match path_buf {
-                Ok(v) => Ok(v),
-                Err(..) => Err(Error::PathParsingFailed)
-            }
-        },
-        Err(_) => Err(Error::PathParsingFailed)
-    }?;
-
-    let mut file_size = 0;
-    let mut file_path = fs_path.into_path_buf();
-
-    match std::fs::metadata(&file_path) {
-        Ok(metadata) => {
-            if metadata.is_file() {
-                // All is good, direct file hit
-                file_size = metadata.len();
-                Ok(())
-            } else if metadata.is_dir() {
-                // Check if we have a default doc to return instead
-                match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
-                    Some(p) => {
-                        file_size = p.metadata()?.len();
-                        file_path = p;
-                        Ok(())
-                    },
-                    None => {
-                        log(LogCategory::Info, "Path is directory");
-                        Err(Error::PathMustBeFile)
-                    }
-                }
-            } else {
-                log(LogCategory::Info, "Path not handled");
-                Err(Error::PathMustBeFile)
-            }
-        },
-        Err(err) => {
-            // Nothing was found, see if a glob can find the file regardle
-            let mut matches = glob(&format!("{}.*", file_path.to_string_lossy()))?;
-            
-            let glob_match_ok = match matches.next() {
-                Some(file) => {
-                    match file {
-                        Ok(p) => {
-                            match std::fs::metadata(p.clone()) {
-                                Ok(metadata) => {
-                                    if metadata.is_file() {
-                                        file_size = metadata.len();
-                                        file_path = p;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                },
-                                Err(..) => false
-                            }
-                        },
-                        Err(..) => false
-                    }
-                },
-                None => false
-            };
-
-            // We only want one match
-            let single_match = glob_match_ok && matches.next().is_none();
-            if single_match {
-                // One matched file
-                Ok(())
-            } else if glob_match_ok {
-                // We must have had multiple matches
-                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err));
-                Err(Error::PathMustBeFile)
-            } else {
-                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err));
-                Err(Error::PathMetadataFailed)
-            }
-        }
-    }?;
-
-    Ok(RequestedFileInfo {
-        mime_type: get_mimetype(&file_path, &conf.mime_types).to_string(),
-        file_size: file_size,
-        file_path: file_path,
-    })
-}
-
-fn process_request(line: &str, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
-    use std::path::MAIN_SEPARATOR_STR;
-    use normpath::PathExt;
-    use glob::glob;
-
-    if !line.starts_with(GET_VERB) || !line.ends_with(HTTP_VER) {
-        return Err(Error::UnsupportedMethod);
-    }
-
-    // Remove verb + HTTP version
-    let line_end = line.len() - HTTP_VER.len();
-    let path = line[GET_VERB.len()..line_end].to_string();
-    
-    // File path mapping algorithm:
-    // Following steps are always taken:
-    // - Validate the path starts with "/"
-    // - Normalizing path by passing it through rusts Url::parse()
-    // - Read the url.path() component, stripping the initial "/"
-    // - Transform to a fs path, by constructing it via "current_dir\.\path_from_url"
-    // We can now determine what file to return:
-    // - If we have a file we are done, else
-    // - If the path is a folder, check if any default docs exists at "path\default_doc", else
-    // - If the path does not exist, check if any exists at "path.*"
-    // - Return not found
-
-    if !path.starts_with("/") {
-        return Err(Error::PathParsingFailed);
-    }
-    
-    let parse_url = String::from("http://localhost") + &path;
-    let cur_dir = &conf.www_root;
-    let fs_path = match url::Url::parse(&parse_url) {
-        Ok(url) => {
-            let mut url_path = url.path().replace("/", MAIN_SEPARATOR_STR);
-            // rust's fs code gets confused if we join a "\", as this
-            // will just change the directory to root, eg "C:\"
-            url_path = url_path[1..].to_owned();
-            let path_buf = Path::new(&cur_dir)
-                .join(url_path)
-                .normalize_virtually(); // This does not hit the fs, which is what we want
-            match path_buf {
-                Ok(v) => Ok(v),
-                Err(..) => Err(Error::PathParsingFailed)
-            }
-        },
-        Err(_) => Err(Error::PathParsingFailed)
-    }?;
-    
     let mut file_size = 0;
     let mut file_path = fs_path.into_path_buf();
 
@@ -698,40 +290,32 @@ pub fn bind_server_socket(addr: SocketAddr, timeout_ms: u64) -> Result<Socket, s
     Ok(socket)
 }
 
-pub struct Server {
-    conf: ServerConfiguration,
-    address: SocketAddr,
-    tls_acceptor: Option<Arc<TlsAcceptor>>,
-    bind: Option<SocketAddr>,
-    socket: Option<Socket>,
-}
-
-fn handle_connection3(stream: impl Read + Write, conf: ServerConfiguration) {
+fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
     let mut stream = Stream::new(stream, conf.buffer_size);
     loop {
         match stream.next_request() {
             Ok(request) => {
                 // todo handle the server response
-                match process_request3(&request, &conf) {
+                match process_request(&request, &conf) {
                     Ok(file_info) => {
-                        handle_response3(&mut stream, &file_info, &conf);
+                        handle_response(&mut stream, &file_info);
                     },
                     Err(err) => {
                         log(LogCategory::Info, &format!("Error: {:?}", err));
-                        handle_http_error4(&mut stream, 404, "Not Found", None);
+                        handle_http_error(&mut stream, 404, "Not Found", None);
                     }
                 };
             },
             Err(err) => {
                 match err {
                     HttpError::StreamError(StreamError::BufferOverflow) => {
-                        handle_http_error4(&mut stream, 400, "", None);
+                        handle_http_error(&mut stream, 400, "", None);
                     },
                     HttpError::MethodNotSupported(..) => {
-                        handle_http_error4(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
+                        handle_http_error(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
                     },
                     _ => {
-                        handle_http_error4(&mut stream, 500, "", None);
+                        handle_http_error(&mut stream, 500, "", None);
                     }
                 };
                 // close connection by returning from function, causing
@@ -742,13 +326,13 @@ fn handle_connection3(stream: impl Read + Write, conf: ServerConfiguration) {
     }
 }
 
-fn setup_connection3(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
+fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
     match &tls_acceptor {
         Some(acceptor) => {
             match acceptor.accept(stream) {
                 Ok(stream) => {
                     // let s = Arc::new(Mutex::new(stream));
-                    thread::spawn(move || handle_connection3(stream, conf));
+                    thread::spawn(move || handle_connection(stream, conf));
                 },
                 Err(e) => {
                     match &e {
@@ -764,7 +348,7 @@ fn setup_connection3(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>,
         None => {
             thread::spawn(move || {
                 // let s = Arc::new(Mutex::new(stream));
-                handle_connection3(stream, conf);
+                handle_connection(stream, conf);
             });
         }
     }
@@ -776,7 +360,6 @@ impl Server {
             conf,
             address,
             tls_acceptor,
-            bind: None,
             socket: None,
         }
     }
@@ -801,7 +384,7 @@ impl Server {
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
-                            setup_connection3(stream, &self.tls_acceptor, self.conf.clone());
+                            setup_connection(stream, &self.tls_acceptor, self.conf.clone());
                         },
                         Err(..) => {
                             // todo log err
@@ -819,7 +402,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::VecDeque, fs, io::ErrorKind};
+    use std::{fs, io::ErrorKind};
     use test_case::test_case;
     use crate::test_data::{
         HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST, HTTP_REQ_GET_NON_EXISTENT_FILE, HTTP_REQ_GET_README_GLOB_TEST, HTTP_REQ_GET_README_MD, HTTP_REQ_POST

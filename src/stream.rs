@@ -3,7 +3,7 @@ use std::io::{BufReader, Error, Read, Write};
 use crate::misc::{HttpError, StreamError};
 use crate::request::HttpRequest;
 
-trait ReadWrite: std::io::Read + std::io::Write {}
+pub trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: Read + Write> ReadWrite for T {} 
 
 /// Wraps a readable/writeable stream of bytes, 

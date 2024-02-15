@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::error::Error;
 use clap::Parser;
 use native_tls::{Identity, TlsAcceptor};
-use socket2::{Socket, TcpKeepalive, Domain, Type};
 
 pub mod native;
 pub mod server;
@@ -15,10 +14,9 @@ pub mod log;
 pub mod misc;
 pub mod stream;
 pub mod test_data;
-use native::load_system_certificate;
-use server::run_server;
-use log::{LogCategory, log};
 
+use crate::native::load_system_certificate;
+use crate::log::{LogCategory, log};
 use crate::server::{Server, ServerConfiguration};
 
 const DEFAULT_OPTIONS_BIND_VALUE: &str = "0.0.0.0";
@@ -144,18 +142,6 @@ fn main() {
     };
 
     server.run();
-}
-
-fn bind_server_socket(addr: SocketAddr) -> Result<Socket, std::io::Error> {
-    use std::time::Duration;
-
-    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
-    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(4));
-    socket.set_tcp_keepalive(&keepalive)?;
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    socket.bind(&addr.into())?;
-    socket.listen(32)?;
-    Ok(socket)
 }
 
 fn print_server_addr(local_addr: &SocketAddr, protocol: &str, base_dir: &PathBuf) {
