@@ -4,6 +4,7 @@
 // regardless of the files actual line endings. To ensure "proper" CRLF line
 // endings, we must manually add a \r before newlines.
 pub const HTTP_REQ_GET: &str = "GET / HTTP/1.1\r\n\r\n";
+pub const HTTP_REQ_GET_NON_EXISTENT_FILE: &str = "GET /some_file_not_here HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_README_MD: &str = "GET /readme.md HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_README_GLOB_TEST: &str = "GET /readme HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST: &str = "GET /Cargo HTTP/1.1\r\n\r\n";

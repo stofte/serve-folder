@@ -815,15 +815,8 @@ mod tests {
     use std::{collections::VecDeque, fs, io::ErrorKind};
     use test_case::test_case;
     use crate::test_data::{
-        HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST,
-        HTTP_REQ_GET_README_GLOB_TEST,
-        HTTP_REQ_GET_README_MD,
-        HTTP_REQ_POST
+        HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST, HTTP_REQ_GET_NON_EXISTENT_FILE, HTTP_REQ_GET_README_GLOB_TEST, HTTP_REQ_GET_README_MD, HTTP_REQ_POST
     };
-
-    fn wrap_inp_vec(vec: VecDeque<u8>) -> Arc<Mutex<VecDeque<u8>>> {
-        Arc::new(Mutex::new(vec))
-    }
 
     fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
         let conf = match conf {
@@ -850,31 +843,7 @@ mod tests {
     }
 
     // These tests generally assume that the tests are run with project root as the current_dir.
-    // TODO: fix brittleness with each test requiring a unique server address to work
-    // TODO: the port issue prevents usage of test_case attribute it seems!
  
-    // #[test]
-    // fn returns_expected_405_method_not_allowed() {
-    //     let conf = ServerConfiguration::new(PathBuf::new(), None, None);
-    //     let mut veq = VecDeque::from(b"PUT /readme.md HTTP/1.1".to_owned());
-
-    //     handle_response(&mut veq, &conf);
-
-    //     let response = String::from_utf8(veq.into()).expect("Failed to read response");
-    //     assert!(response.starts_with("HTTP/1.1 405"));
-    // }
-
-    // #[test]
-    // fn returns_expected_404_not_found() {
-    //     let conf = ServerConfiguration::new(PathBuf::new(), None, None);
-    //     let mut veq = VecDeque::from(b"GET /some_file_not_here HTTP/1.1".to_owned());
-
-    //     handle_response(&mut veq, &conf);
-
-    //     let response = String::from_utf8(veq.into()).expect("Failed to read response");
-    //     assert!(response.starts_with("HTTP/1.1 404"));
-    // }
-
     // // todo: code now rejects paths without initial slashes
     // #[test_case("../../../foo"; "Regular")]
     // #[test_case("..\\..\\..\\foo"; "Regular 2nd")]
@@ -887,24 +856,6 @@ mod tests {
     //         Ok(..) => panic!("Request path should not parse"),
     //         Err(..) => () // These paths should all fail to translate
     //     };
-    // }
-
-    // #[test_case("/", "readme.md"; "root")]
-    // #[test_case("/src/", "main.rs"; "sub folder with slash")]
-    // #[test_case("/src", "main.rs"; "sub folder no slash")]
-    // fn can_map_to_default_document(path: &str, default_doc: &str) {
-    //     use std::env::current_dir;
-        
-    //     let req = format!("GET {path} HTTP/1.1");
-    //     let mut veq = VecDeque::from(req.as_bytes().to_owned());
-    //     let default_docs = Some(vec![default_doc.to_owned()]);
-    //     let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None);
-        
-    //     handle_response(&mut veq, &conf);
-
-    //     let response = String::from_utf8(veq.into()).expect("Failed to read response");
-
-    //     assert!(response.starts_with("HTTP/1.1 200"));
     // }
 
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
@@ -959,6 +910,15 @@ mod tests {
 
         // Mime type should also be included
         assert_eq!("text/plain", content_type);
+    }
+
+    #[test]
+    fn returns_expected_405_method_not_allowed() {
+        let address = start_server(None);
+
+        let response = call_server_and_read_response(address, HTTP_REQ_POST);
+
+        assert!(response.starts_with("HTTP/1.1 405"));
     }
 
     #[test]
@@ -1018,5 +978,30 @@ mod tests {
         let response = call_server_and_read_response(address, HTTP_REQ_GET_README_GLOB_TEST);
 
         assert!(response.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test_case("/", "readme.md"; "root")]
+    #[test_case("/src/", "main.rs"; "sub folder with slash")]
+    #[test_case("/src", "main.rs"; "sub folder no slash")]
+    fn can_map_to_default_document(path: &str, default_doc: &str) {
+        use std::env::current_dir;
+
+        let default_docs = Some(vec![default_doc.to_owned()]);
+        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None);
+        let address = start_server(Some(conf));
+
+        let request = format!("GET {path} HTTP/1.1\r\n\r\n");
+        let response = call_server_and_read_response(address, &request);
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn returns_expected_404_not_found() {
+        let address = start_server(None);
+
+        let response = call_server_and_read_response(address, HTTP_REQ_GET_NON_EXISTENT_FILE);
+
+        assert!(response.starts_with("HTTP/1.1 404"));
     }
 }
