@@ -90,7 +90,7 @@ fn main() {
                     native::Error::FindCertificate => { format!("Could not find certificate: {}", cert_thumbprint) },
                     native::Error::CertificateOperation(msg) => { format!("Certificate operation failed: {}", msg) },
                 };
-                log(LogCategory::Error, &msg);
+                log(LogCategory::Error, &msg, file!(), line!());
                 return;
             }
         };
@@ -106,7 +106,7 @@ fn main() {
                 let acceptor = Arc::new(acceptor);
                 tls_acceptor = Some(acceptor);
             },
-            Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.")
+            Err(_) => log(LogCategory::Warning, &"Failed to open certificate using provided password. TLS disabled.", file!(), line!())
         };
     }
 
@@ -117,7 +117,7 @@ fn main() {
                 "Failed to set \"{}\" as base directory. Using \"{}\" instead.", 
                 p.to_string_lossy(),
                 get_current_dir().to_string_lossy()
-            ));
+            ), file!(), line!());
         },
         None => ()
     };
@@ -126,7 +126,7 @@ fn main() {
     let addr = addr_str.parse::<SocketAddr>();
 
     if addr.is_err() {
-        log(LogCategory::Error, &format!("Could not parse bind value {}. Exiting ...", addr_str));
+        log(LogCategory::Error, &format!("Could not parse bind value {}. Exiting ...", addr_str), file!(), line!());
     }
     let addr = addr.expect("Expected ok socket");
 
@@ -141,7 +141,7 @@ fn main() {
             print_server_addr(&addr, protocol, &wwwroot);
         },
         Err(err) => {
-            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err));
+            log(LogCategory::Error, &format!("Could not bind to {}://{}. {}. Exiting ...", protocol, addr_str, err), file!(), line!());
         }
     };
 
@@ -155,7 +155,7 @@ fn print_server_addr(local_addr: &SocketAddr, protocol: &str, base_dir: &PathBuf
         // so for clickable links we replace the addr with localhost instead.
         local_str = ["localhost".to_string(), local_addr.port().to_string()].join(":");
     }
-    log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_str));
+    log(LogCategory::Info, &format!("Serving \"{}\" @ {}://{}", base_dir.to_string_lossy(), protocol, local_str), file!(), line!());
 }
 
 // Used to parse key values in arguments

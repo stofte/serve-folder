@@ -81,6 +81,7 @@ static MIMETYPES: phf::Map<&'static str, &'static str> = phf_map! {
     "xml" => "application/xml"
 };
 
+/// Handles writing a file response to the tcp stream.
 fn handle_response(stream: &mut Stream, request_info: &RequestedFileInfo) -> String {
     let path = &request_info.file_path;
     let f_wrapped = File::open(&path);
@@ -103,22 +104,23 @@ fn handle_response(stream: &mut Stream, request_info: &RequestedFileInfo) -> Str
                 format!("{} ({} bytes)", path.to_string_lossy(), request_info.file_size)
             } else {
                 let status = format!("Failed to write contents to response");
-                log(LogCategory::Warning, &status);
+                log(LogCategory::Warning, &status, file!(), line!());
                 status
             }
         } else {
             let status = format!("Failed to write headers to response");
-            log(LogCategory::Warning, &status);
+            log(LogCategory::Warning, &status, file!(), line!());
             status
         }
     } else {
         let status = format!("500 Internal Server Error");
         handle_http_error(stream, 500, "Internal Server Error", None);
-        log(LogCategory::Info, &status);
+        log(LogCategory::Info, &status, file!(), line!());
         status
     }
 }
 
+/// Helper for writing out HTTP error messages
 fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
     let status = match code {
         400 => "Bad Request",
@@ -139,10 +141,12 @@ fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option
 
     stream.write_all(lines.join("\r\n").as_bytes()).unwrap_or_else(|err| {
         // todo impl default formatter?
-        log(LogCategory::Warning, &format!("Failed writing error response: {:?}", err))
+        log(LogCategory::Warning, &format!("Failed writing error response: {:?}", err), file!(), line!())
     });
 }
 
+/// Maps a Http request target to a file path on disk.
+/// The file may or may not exist, as other logic runs afterwards.
 fn translate_target_to_filepath(target: &Option<String>, conf: &ServerConfiguration) -> Result<PathBuf, Error> {
     use std::path::MAIN_SEPARATOR_STR;
     use normpath::PathExt;
@@ -170,6 +174,15 @@ fn translate_target_to_filepath(target: &Option<String>, conf: &ServerConfigurat
     Ok(fs_path.into_path_buf())
 }
 
+/// Once a Http request target has been mapped to a file system path like object,
+/// this function runs and tries to determine what actual file is matched, if any.
+/// 1. File is matched, return
+/// 2. Directory is matched:
+///    a. If default document is found, return
+///    b. Else if directory listing is enabled return (an err indicating this case)
+/// 3. Nothing is matched, find number of matches using globbing (some/where.*)
+///    a. If a single file is found, return
+/// 4. If nothing was matched, fail mapping
 fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
     use glob::glob;
     
@@ -194,13 +207,13 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                         if conf.directory_browsing {
                             Err(Error::PathIsDirectory)
                         } else {
-                            log(LogCategory::Info, "Path is directory");
+                            log(LogCategory::Info, "Path is directory", file!(), line!());
                             Err(Error::PathMustBeFile)
                         }
                     }
                 }
             } else {
-                log(LogCategory::Info, "Path not handled");
+                log(LogCategory::Info, "Path not handled", file!(), line!());
                 Err(Error::PathMustBeFile)
             }
         },
@@ -238,10 +251,10 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                 Ok(())
             } else if glob_match_ok {
                 // We must have had multiple matches
-                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err));
+                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err), file!(), line!());
                 Err(Error::PathMustBeFile)
             } else {
-                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err));
+                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err), file!(), line!());
                 Err(Error::PathMetadataFailed)
             }
         }
@@ -323,7 +336,7 @@ fn get_mimetype(path: &PathBuf, mimetypes: &Option<Vec<(String, String)>>) -> St
                 match MIMETYPES.get(&ext) {
                     Some(mime) => mime,
                     None => {
-                        log(LogCategory::Warning, &format!("No mimetype for '{}'", ext));
+                        log(LogCategory::Warning, &format!("No mimetype for '{}'", ext), file!(), line!());
                         "text/plain"
                     }
                 }
@@ -368,7 +381,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                                         }
                                     },
                                     _ => {
-                                        log(LogCategory::Info, &format!("Error: {:?}", err));
+                                        log(LogCategory::Info, &format!("Error: {:?}", err), file!(), line!());
                                         handle_http_error(&mut stream, 404, "Not Found", None);
                                     }
                                 }
@@ -397,7 +410,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                     HttpError::StreamError(StreamError::ConnectionTimeout) |
                     HttpError::StreamError(StreamError::ConnectionClosed) | 
                     HttpError::StreamError(StreamError::ConnectionReset) => {
-                        log(LogCategory::Info, &format!("Connection error: {:?}", err));
+                        log(LogCategory::Info, &format!("Connection error: {:?}", err), file!(), line!());
                     }
                     _ => {
                         println!("handle_connection:Err:{:?}", err);
@@ -412,6 +425,8 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
     }
 }
 
+/// Wires the stream up for TLS if this was specified for the server, and
+/// then starts a new thread for handling request/responses.
 fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, conf: ServerConfiguration) {
     match &tls_acceptor {
         Some(acceptor) => {
@@ -423,7 +438,7 @@ fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, 
                     match &e {
                         HandshakeError::Failure(ee) => {
                             // Likely because of self-signed not being in trusted roots
-                            log(LogCategory::Error, &format!("{}", ee));
+                            log(LogCategory::Error, &format!("{}", ee), file!(), line!());
                         },
                         _ => ()
                     }
@@ -431,9 +446,7 @@ fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, 
             }
         },
         None => {
-            thread::spawn(move || {
-                handle_connection(stream, conf);
-            });
+            thread::spawn(move || handle_connection(stream, conf));
         }
     }
 }

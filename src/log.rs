@@ -4,7 +4,7 @@ pub enum LogCategory {
     Error,
 }
 
-pub fn log(category: LogCategory, text: &str) {
+pub fn log(category: LogCategory, text: &str, file: &str, line: u32) {
     use chrono::prelude::*;
     use colored::*;
 
@@ -14,5 +14,9 @@ pub fn log(category: LogCategory, text: &str) {
         LogCategory::Error => "[ERR]".red().on_black()
     };
 
+    #[cfg(debug_assertions)]
+    println!("{} {} {} [{}:{}]", Local::now().format("%T%.3f"), cat, text, file, line);
+
+    #[cfg(not(debug_assertions))]
     println!("{} {} {}", Local::now().format("%T%.3f"), cat, text);
 }
