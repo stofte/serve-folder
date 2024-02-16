@@ -260,7 +260,21 @@ fn write_http_chunk(stream: &mut Stream, chunk: &str) -> Result<(), StreamError>
     Ok(())
 }
 
-fn process_directory_listing(path: &PathBuf, request_target: &Option<String>, stream: &mut Stream) -> Result<(), StreamError> {
+/// If a Http request matches a folder, this function will write a listing 
+/// to the stream, using chunked transfer encoding.
+fn process_directory_listing(path: &PathBuf, www_root: &PathBuf, stream: &mut Stream) -> Result<(), StreamError> {
+    // do some fiddling about with strings, to find out what the url path prefix should be
+    let path_str = path.to_string_lossy().into_owned();
+    let www_root_str = www_root.to_string_lossy().into_owned();
+    assert!(path_str.starts_with(&www_root_str));
+    let mut sub_path = path_str[www_root_str.len()..].replace(std::path::MAIN_SEPARATOR_STR, "/");
+    if sub_path.len() == 0 {
+        sub_path = "/".to_owned();
+    }
+    if !sub_path.ends_with("/") {
+        sub_path.push_str("/");
+    }
+    println!("{:?} => {:?}", path.to_str(), sub_path);
     let dir = fs::read_dir(path).expect("path was not a directory");
     let head = [
         "HTTP/1.1 200 OK",
@@ -274,7 +288,7 @@ fn process_directory_listing(path: &PathBuf, request_target: &Option<String>, st
     for path in dir {
         let file_name_os = path.unwrap().file_name();
         let s = file_name_os.to_str().unwrap();
-        let str = format!("<li><a href=\"{s}\">{s}</a></li>\r\n");
+        let str = format!("<li><a href=\"{sub_path}{s}\">{s}</a></li>\r\n");
         write_http_chunk(stream, &str)?;
     }
     write_http_chunk(stream, "</ul>\r\n")?;
@@ -349,7 +363,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                                     Error::PathIsDirectory => {
                                         // path is directory is only if directory_browsing is enabled
                                         assert!(conf.directory_browsing);
-                                        if let Err(_e) = process_directory_listing(&file_path, &request.target, &mut stream) {
+                                        if let Err(_e) = process_directory_listing(&file_path, &conf.www_root, &mut stream) {
                                             // todo if we had an error while printing the listings, we probably also want to break
                                         }
                                     },
@@ -479,9 +493,10 @@ mod tests {
     };
 
     fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
+        let current_dir = std::env::current_dir().unwrap();
         let conf = match conf {
             Some(c) => c,
-            None => ServerConfiguration::new(PathBuf::new(), None, None, None, false)
+            None => ServerConfiguration::new(current_dir, None, None, None, false)
         };
         let address = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         let mut server = Server::new(conf, address, None);
@@ -682,7 +697,8 @@ mod tests {
     fn returns_directory_listings() {
         use chunked_transfer::Decoder;
         
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None, None, true);
+        let current_dir = std::env::current_dir().unwrap();
+        let conf = ServerConfiguration::new(current_dir, None, None, None, true);
         let address = start_server(Some(conf));
 
         let client_handle = thread::spawn(move || {
