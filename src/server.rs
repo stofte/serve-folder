@@ -275,6 +275,7 @@ fn process_directory_listing(path: &PathBuf, stream: &mut Stream) {
         "7",
         "</ul>\r\n",
         "0",
+        "",
         ""
     ].join("\r\n");
     stream.write_all(end.as_bytes()).unwrap();
