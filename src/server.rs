@@ -256,40 +256,29 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
 
 fn write_http_chunk(stream: &mut Stream, chunk: &str) -> Result<(), StreamError> {
     let str = format!("{:x}\r\n{}\r\n", chunk.len(), chunk);
-    println!("CHUNK: {:?}", str);
     stream.write_all(str.as_bytes())?;
     Ok(())
 }
 
 fn process_directory_listing(path: &PathBuf, request_target: &Option<String>, stream: &mut Stream) -> Result<(), StreamError> {
     let dir = fs::read_dir(path).expect("path was not a directory");
-    let initial = [
+    let head = [
         "HTTP/1.1 200 OK",
         "Content-Type: text/html",
         "Transfer-Encoding: chunked",
         "",
-        "6",
-        "<ul>\r\n",
         ""
     ].join("\r\n");
-    // todo this fails??
-    // write_http_chunk(stream, "<ul>\r\n")?;
-    stream.write_all(initial.as_bytes()).unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    write_http_chunk(stream, "<ul>\r\n")?;
     for path in dir {
         let file_name_os = path.unwrap().file_name();
         let s = file_name_os.to_str().unwrap();
         let str = format!("<li><a href=\"{s}\">{s}</a></li>\r\n");
-        let chunk = format!("{:x}\r\n{}\r\n", str.len(), str);
-        stream.write_all(chunk.as_bytes()).unwrap();
+        write_http_chunk(stream, &str)?;
     }
-    let end = [
-        "7",
-        "</ul>\r\n",
-        "0",
-        "",
-        ""
-    ].join("\r\n");
-    stream.write_all(end.as_bytes()).unwrap();
+    write_http_chunk(stream, "</ul>\r\n")?;
+    write_http_chunk(stream, "")?; // end encoding with empty chunk
     Ok(())
 }
 
@@ -380,7 +369,6 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                 }
                 // we should only keep the connection alive, if the client indicates this
                 if !request.connection_keep_alive() {
-                    println!("NO KEEP ALIVE!");
                     break;
                 }
             },
@@ -707,6 +695,7 @@ mod tests {
 
         let response = client_handle.join().unwrap();
         let body_start = String::from_utf8_lossy(&response).find("\r\n\r\n").unwrap();
+
         let response_body = &response[body_start+4..];
 
         let mut decoder = Decoder::new(response_body);
@@ -753,5 +742,21 @@ mod tests {
         let err_kind = write_result.unwrap_err().kind();
         // connection error can be either kind
         assert!(err_kind == ErrorKind::ConnectionAborted || err_kind == ErrorKind::ConnectionReset);
+    }
+
+    //#[test]
+    fn does_not_return_anything_on_connection_timeout() {
+        let address = start_server(None);
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            let mut buf = Vec::new();
+            let read_c = stream.read_to_end(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[0..read_c]).into_owned()
+        });
+
+        let response = client_handle.join().unwrap();
+
+        println!("RESPONSE: {:?}", response);
     }
 }
