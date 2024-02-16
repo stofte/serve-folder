@@ -380,6 +380,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                 }
                 // we should only keep the connection alive, if the client indicates this
                 if !request.connection_keep_alive() {
+                    println!("NO KEEP ALIVE!");
                     break;
                 }
             },
@@ -714,5 +715,43 @@ mod tests {
 
         // check that the output contains (some of) the relevant files
         assert!(["log.rs", "main.rs", "server.rs"].iter().all(|f| decoded_body.contains(f)));
+    }
+
+    #[test]
+    fn can_reuse_connection_for_multiple_requests() {
+        let address = start_server(None);
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            // we're just splitting the request here for no real reason
+            stream.write("GET /test_data/xml.xml HTTP/1.1\r\n".as_bytes()).unwrap();
+            stream.write("Connection: keep-alive\r\n\r\n".as_bytes()).unwrap();
+            // the exact size of the response, for both xml and txt files
+            let mut buffer = [0; 101];
+            stream.read_exact(&mut buffer).unwrap();
+            let response_xml = String::from_utf8_lossy(&buffer).into_owned();
+            // send second request using the same socket
+            stream.write("GET /test_data/plain.txt HTTP/1.1\r\n\r\n".as_bytes()).unwrap();
+            stream.read_exact(&mut buffer).unwrap();
+            let response_txt = String::from_utf8_lossy(&buffer).into_owned();
+            // give the connection time to shutdown
+            thread::sleep(Duration::from_millis(100));
+            // while im sure it's somewhat undefined and dependent on timing,
+            // writing twice to the socket seems the most reliable way to see
+            // a closed connection, on the second write.
+            stream.write("GET ".as_bytes()); // ignore this part
+            // and this time we should get an actual error
+            let write_result = stream.write("/test_data/xml.xml HTTP/1.1\r\n\r\n".as_bytes());
+            (response_xml, response_txt, write_result)
+        });
+
+        let (response_xml, response_txt, write_result) = client_handle.join().unwrap();
+
+        assert!(response_xml.starts_with("HTTP/1.1 200 OK"));
+        assert!(response_txt.starts_with("HTTP/1.1 200 OK"));
+        assert!(write_result.is_err());
+        let err_kind = write_result.unwrap_err().kind();
+        // connection error can be either kind
+        assert!(err_kind == ErrorKind::ConnectionAborted || err_kind == ErrorKind::ConnectionReset);
     }
 }
