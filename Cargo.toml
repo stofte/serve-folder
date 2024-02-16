@@ -1,3 +1,4 @@
+workspace = { members = ["gen-test"] }
 [package]
 name = "servefolder"
 description = "Simple CLI server utility for hosting directories over HTTP"
