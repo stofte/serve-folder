@@ -88,7 +88,7 @@ impl HttpRequest {
         }
     }
 
-    fn connection_keep_alive(self) -> bool {
+    pub fn connection_keep_alive(self) -> bool {
         if let Some(h) = self.headers.iter().find(|x| x.name == "connection") {
             h.value.to_lowercase() == "keep-alive"
         } else {

@@ -378,7 +378,10 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                         handle_http_error(&mut stream, 404, "Not Found", None);
                     }
                 }
-                
+                // we should only keep the connection alive, if the client indicates this
+                if !request.connection_keep_alive() {
+                    break;
+                }
             },
             Err(err) => {
                 match err {
@@ -411,7 +414,6 @@ fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, 
         Some(acceptor) => {
             match acceptor.accept(stream) {
                 Ok(stream) => {
-                    // let s = Arc::new(Mutex::new(stream));
                     thread::spawn(move || handle_connection(stream, conf));
                 },
                 Err(e) => {
@@ -427,7 +429,6 @@ fn setup_connection(stream: TcpStream, tls_acceptor: &Option<Arc<TlsAcceptor>>, 
         },
         None => {
             thread::spawn(move || {
-                // let s = Arc::new(Mutex::new(stream));
                 handle_connection(stream, conf);
             });
         }
