@@ -547,7 +547,7 @@ mod tests {
     // }
 
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
-    #[test_case("xml", "hej/mor", "/test_data/xml.xml"; "Xml file (overrides built-in)")]
+    #[test_case("xml", "hej/mor", "/test-data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
         let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None, false);
         let address = start_server(Some(conf));
@@ -742,14 +742,14 @@ mod tests {
         let client_handle = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
             // we're just splitting the request here for no real reason
-            stream.write("GET /test_data/xml.xml HTTP/1.1\r\n".as_bytes()).unwrap();
+            stream.write("GET /test-data/xml.xml HTTP/1.1\r\n".as_bytes()).unwrap();
             stream.write("Connection: keep-alive\r\n\r\n".as_bytes()).unwrap();
             // the exact size of the response, for both xml and txt files
             let mut buffer = [0; 101];
             stream.read_exact(&mut buffer).unwrap();
             let response_xml = String::from_utf8_lossy(&buffer).into_owned();
             // send second request using the same socket
-            stream.write("GET /test_data/plain.txt HTTP/1.1\r\n\r\n".as_bytes()).unwrap();
+            stream.write("GET /test-data/plain.txt HTTP/1.1\r\n\r\n".as_bytes()).unwrap();
             stream.read_exact(&mut buffer).unwrap();
             let response_txt = String::from_utf8_lossy(&buffer).into_owned();
             // give the connection time to shutdown
