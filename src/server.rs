@@ -124,8 +124,9 @@ fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        _ => "Internal Server Error"
+          _ => "Internal Server Error"
     };
+
     let header = format!("HTTP/1.1 {} {}", code, status);
     let content_type = "Content-Type: text/plain".to_owned();
     let content_length = format!("Content-Length: {}", body.len());
@@ -253,7 +254,14 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
     })
 }
 
-fn process_directory_listing(path: &PathBuf, stream: &mut Stream) {
+fn write_http_chunk(stream: &mut Stream, chunk: &str) -> Result<(), StreamError> {
+    let str = format!("{:x}\r\n{}\r\n", chunk.len(), chunk);
+    println!("CHUNK: {:?}", str);
+    stream.write_all(str.as_bytes())?;
+    Ok(())
+}
+
+fn process_directory_listing(path: &PathBuf, request_target: &Option<String>, stream: &mut Stream) -> Result<(), StreamError> {
     let dir = fs::read_dir(path).expect("path was not a directory");
     let initial = [
         "HTTP/1.1 200 OK",
@@ -264,10 +272,13 @@ fn process_directory_listing(path: &PathBuf, stream: &mut Stream) {
         "<ul>\r\n",
         ""
     ].join("\r\n");
+    // todo this fails??
+    // write_http_chunk(stream, "<ul>\r\n")?;
     stream.write_all(initial.as_bytes()).unwrap();
-    // todo more stuff in here. possibly chunked output encoding ... ?
     for path in dir {
-        let str = format!("<li>{}</li>\r\n", path.unwrap().path().display());
+        let file_name_os = path.unwrap().file_name();
+        let s = file_name_os.to_str().unwrap();
+        let str = format!("<li><a href=\"{s}\">{s}</a></li>\r\n");
         let chunk = format!("{:x}\r\n{}\r\n", str.len(), str);
         stream.write_all(chunk.as_bytes()).unwrap();
     }
@@ -279,6 +290,7 @@ fn process_directory_listing(path: &PathBuf, stream: &mut Stream) {
         ""
     ].join("\r\n");
     stream.write_all(end.as_bytes()).unwrap();
+    Ok(())
 }
 
 fn map_to_default_document(path: &Path, default_documents: &Option<Vec<String>>, www_root: &PathBuf) -> Option<PathBuf> {
@@ -348,7 +360,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                                     Error::PathIsDirectory => {
                                         // path is directory is only if directory_browsing is enabled
                                         assert!(conf.directory_browsing);
-                                        process_directory_listing(&file_path, &mut stream);
+                                        process_directory_listing(&file_path, &request.target, &mut stream);
                                     },
                                     _ => {
                                         log(LogCategory::Info, &format!("Error: {:?}", err));
@@ -373,7 +385,13 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                     HttpError::MethodNotSupported(..) => {
                         handle_http_error(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
                     },
+                    HttpError::StreamError(StreamError::ConnectionTimeout) |
+                    HttpError::StreamError(StreamError::ConnectionClosed) | 
+                    HttpError::StreamError(StreamError::ConnectionReset) => {
+                        log(LogCategory::Info, &format!("Connection error: {:?}", err));
+                    }
                     _ => {
+                        println!("handle_connection:Err:{:?}", err);
                         handle_http_error(&mut stream, 500, "", None);
                     }
                 };
@@ -464,7 +482,7 @@ mod tests {
     use std::{fs, io::ErrorKind};
     use test_case::test_case;
     use crate::test_data::{
-        HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST, HTTP_REQ_GET_NON_EXISTENT_FILE, HTTP_REQ_GET_README_GLOB_TEST, HTTP_REQ_GET_README_MD, HTTP_REQ_POST
+        HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST, HTTP_REQ_GET_NON_EXISTENT_FILE, HTTP_REQ_GET_README_GLOB_TEST, HTTP_REQ_GET_README_MD, HTTP_REQ_GET_SRC_DIRECTORY_FOR_LISTING, HTTP_REQ_POST
     };
 
     fn start_server(conf: Option<ServerConfiguration>) -> SocketAddr {
@@ -665,5 +683,32 @@ mod tests {
         println!("RESPONSE:\n{response}");
 
         assert!(response.starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn returns_directory_listings() {
+        use chunked_transfer::Decoder;
+        
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None, None, true);
+        let address = start_server(Some(conf));
+
+        let client_handle = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.write(HTTP_REQ_GET_SRC_DIRECTORY_FOR_LISTING.as_bytes()).unwrap();
+            let mut buf = Vec::new();
+            let read_c = stream.read_to_end(&mut buf).unwrap();
+            Vec::from(&buf[0..read_c])
+        });
+
+        let response = client_handle.join().unwrap();
+        let body_start = String::from_utf8_lossy(&response).find("\r\n\r\n").unwrap();
+        let response_body = &response[body_start+4..];
+
+        let mut decoder = Decoder::new(response_body);
+        let mut decoded_body = String::new();
+        decoder.read_to_string(&mut decoded_body).unwrap();
+
+        // check that the output contains (some of) the relevant files
+        assert!(["log.rs", "main.rs", "server.rs"].iter().all(|f| decoded_body.contains(f)));
     }
 }

@@ -25,3 +25,4 @@ windows = { version = "0.52", features = [
 
 [dev-dependencies]
 test-case = "3.2"
+chunked_transfer = "1.5.0"

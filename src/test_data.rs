@@ -8,6 +8,7 @@ pub const HTTP_REQ_GET_NON_EXISTENT_FILE: &str = "GET /some_file_not_here HTTP/1
 pub const HTTP_REQ_GET_README_MD: &str = "GET /readme.md HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_README_GLOB_TEST: &str = "GET /readme HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_CARGO_MULTIPLE_MATCH_GLOB_TEST: &str = "GET /Cargo HTTP/1.1\r\n\r\n";
+pub const HTTP_REQ_GET_SRC_DIRECTORY_FOR_LISTING: &str = "GET /src HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_MINIMAL_WITH_PATH_FOO: &str = "GET /foo HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_MINIMAL_WITH_PATH_BAR: &str = "GET /bar HTTP/1.1\r\n\r\n";
 pub const HTTP_REQ_GET_MINIMAL_WITH_URL: &str = "GET http://localhost:8080/ HTTP/1.1\r\n\r\n";
