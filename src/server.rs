@@ -360,7 +360,9 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                                     Error::PathIsDirectory => {
                                         // path is directory is only if directory_browsing is enabled
                                         assert!(conf.directory_browsing);
-                                        process_directory_listing(&file_path, &request.target, &mut stream);
+                                        if let Err(_e) = process_directory_listing(&file_path, &request.target, &mut stream) {
+                                            // todo if we had an error while printing the listings, we probably also want to break
+                                        }
                                     },
                                     _ => {
                                         log(LogCategory::Info, &format!("Error: {:?}", err));
@@ -372,6 +374,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                     },
                     Err(err) => {
                         // todo: this possibly needs to be bad request?
+                        // and we probably want to break the loop, closing the connection
                         handle_http_error(&mut stream, 404, "Not Found", None);
                     }
                 }
