@@ -95,6 +95,14 @@ impl HttpRequest {
             false
         }
     }
+
+    pub fn target_ends_with_slash(&self) -> bool {
+        if let Some(x) = &self.target {
+            x.ends_with("/")
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

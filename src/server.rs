@@ -27,6 +27,16 @@ pub struct ServerConfiguration {
     directory_browsing: bool,
 }
 
+impl ServerConfiguration {
+    fn has_default_documents(&self) -> bool {
+        if let Some(x) = &self.default_documents {
+            x.len() > 0
+        } else {
+            false
+        }
+    }
+}
+
 pub struct Server {
     conf: ServerConfiguration,
     address: SocketAddr,
@@ -59,7 +69,9 @@ enum Error {
     #[error("Path must be a file")]
     PathMustBeFile,
     #[error("Failed to read path")]
-    PathMetadataFailed,
+    PathMetadataFailed(std::io::ErrorKind),
+    #[error("The path matches, but requires a redirection")]
+    PathRequiresRedirect(String)
 }
 
 #[derive(Debug)]
@@ -114,15 +126,16 @@ fn handle_response(stream: &mut Stream, request_info: &RequestedFileInfo) -> Str
         }
     } else {
         let status = format!("500 Internal Server Error");
-        handle_http_error(stream, 500, "Internal Server Error", None);
+        handle_simple_http_response(stream, 500, "Internal Server Error", None);
         log(LogCategory::Info, &status, file!(), line!());
         status
     }
 }
 
-/// Helper for writing out HTTP error messages
-fn handle_http_error(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
+/// Helper for writing out HTTP error messages, redirects and other similar
+fn handle_simple_http_response(stream: &mut Stream, code: u32, body: &str, headers: Option<Vec<String>>) {
     let status = match code {
+        307 => "Temporary Redirect",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -183,7 +196,7 @@ fn translate_target_to_filepath(target: &Option<String>, conf: &ServerConfigurat
 /// 3. Nothing is matched, find number of matches using globbing (some/where.*)
 ///    a. If a single file is found, return
 /// 4. If nothing was matched, fail mapping
-fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<RequestedFileInfo, Error> {
+fn process_request(file_path: &PathBuf, conf: &ServerConfiguration, request: &HttpRequest) -> Result<RequestedFileInfo, Error> {
     use glob::glob;
     
     let mut file_size = 0;
@@ -197,7 +210,7 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                 Ok(())
             } else if metadata.is_dir() {
                 // Check if we have a default doc to return instead
-                match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
+                let m = match map_to_default_document(&file_path, &conf.default_documents, &conf.www_root) {
                     Some(p) => {
                         file_size = p.metadata()?.len();
                         file_path = p;
@@ -211,6 +224,21 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                             Err(Error::PathMustBeFile)
                         }
                     }
+                };
+                // if we either have a match against directory browsing or a default doc, 
+                // we want to ensure the path ends with a "/", so relative requests function
+                // correctly, as serving up "http://localhost/foo" is obviously different from 
+                // "http://localhost/foo/" when eg embedded resources are fetched.
+                if let Ok(..) = m {
+                    // either dir or default docs must have matched, in either case, 
+                    // lets redirect to proper folder path ending with a slash.
+                    if request.target_ends_with_slash() {
+                        m
+                    } else {
+                        Err(Error::PathRequiresRedirect(format!("{}/", request.target.as_ref().unwrap())))
+                    }
+                } else {
+                    m
                 }
             } else {
                 log(LogCategory::Info, "Path not handled", file!(), line!());
@@ -244,6 +272,10 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                 None => false
             };
 
+            let prefix_len = conf.www_root.to_string_lossy().len();
+            let rel_file_path = file_path.to_string_lossy();
+            let rel_file_path = &rel_file_path[prefix_len + 1..];
+
             // We only want one match
             let single_match = glob_match_ok && matches.next().is_none();
             if single_match {
@@ -251,11 +283,10 @@ fn process_request(file_path: &PathBuf, conf: &ServerConfiguration) -> Result<Re
                 Ok(())
             } else if glob_match_ok {
                 // We must have had multiple matches
-                log(LogCategory::Info, &format!("Multiple files matched \"{}\": {}", file_path.to_string_lossy(), err), file!(), line!());
+                log(LogCategory::Info, &format!("Multiple files matched \"{}\"", rel_file_path), file!(), line!());
                 Err(Error::PathMustBeFile)
             } else {
-                log(LogCategory::Info, &format!("Failed to read metadata for \"{}\": {}", file_path.to_string_lossy(), err), file!(), line!());
-                Err(Error::PathMetadataFailed)
+                Err(Error::PathMetadataFailed(err.kind()))
             }
         }
     }?;
@@ -367,12 +398,16 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                 // todo handle the server response
                 match translate_target_to_filepath(&request.target, &conf) {
                     Ok(file_path) => {
-                        match process_request(&file_path, &conf) {
+                        match process_request(&file_path, &conf, &request) {
                             Ok(file_info) => {
                                 handle_response(&mut stream, &file_info);
                             },
                             Err(err) => {
                                 match err {
+                                    Error::PathRequiresRedirect(path) => {
+                                        let location = format!("Location: {}", path).to_owned();
+                                        handle_simple_http_response(&mut stream, 307, "", Some(vec![location]));
+                                    },
                                     Error::PathIsDirectory => {
                                         // path is directory is only if directory_browsing is enabled
                                         assert!(conf.directory_browsing);
@@ -382,7 +417,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                                     },
                                     _ => {
                                         log(LogCategory::Info, &format!("Error: {:?}", err), file!(), line!());
-                                        handle_http_error(&mut stream, 404, "Not Found", None);
+                                        handle_simple_http_response(&mut stream, 404, "Not Found", None);
                                     }
                                 }
                             }
@@ -391,7 +426,7 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
                     Err(err) => {
                         // todo: this possibly needs to be bad request?
                         // and we probably want to break the loop, closing the connection
-                        handle_http_error(&mut stream, 404, "Not Found", None);
+                        handle_simple_http_response(&mut stream, 404, "Not Found", None);
                     }
                 }
                 // we should only keep the connection alive, if the client indicates this
@@ -402,19 +437,19 @@ fn handle_connection(stream: impl Read + Write, conf: ServerConfiguration) {
             Err(err) => {
                 match err {
                     HttpError::StreamError(StreamError::BufferOverflow) => {
-                        handle_http_error(&mut stream, 400, "", None);
+                        handle_simple_http_response(&mut stream, 400, "", None);
                     },
                     HttpError::MethodNotSupported(..) => {
-                        handle_http_error(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
+                        handle_simple_http_response(&mut stream, 405, "", Some(["Allow: GET".to_owned()].to_vec()));
                     },
                     HttpError::StreamError(StreamError::ConnectionTimeout) |
                     HttpError::StreamError(StreamError::ConnectionClosed) | 
                     HttpError::StreamError(StreamError::ConnectionReset) => {
-                        log(LogCategory::Info, &format!("Connection error: {:?}", err), file!(), line!());
+                        // logging is noisy
                     }
                     _ => {
                         println!("handle_connection:Err:{:?}", err);
-                        handle_http_error(&mut stream, 500, "", None);
+                        handle_simple_http_response(&mut stream, 500, "", None);
                     }
                 };
                 // close connection by returning from function, causing
@@ -555,8 +590,6 @@ mod tests {
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
         let response = call_server_and_read_response(address, &req);
 
-        println!("{:?}", response);
-
         let mut lines = response.lines();
 
         let response_start_line = lines.next().expect("No lines");
@@ -670,7 +703,6 @@ mod tests {
 
     #[test_case("/", "readme.md"; "root")]
     #[test_case("/src/", "main.rs"; "sub folder with slash")]
-    #[test_case("/src", "main.rs"; "sub folder no slash")]
     fn can_map_to_default_document(path: &str, default_doc: &str) {
         use std::env::current_dir;
 
@@ -771,6 +803,25 @@ mod tests {
         let err_kind = write_result.unwrap_err().kind();
         // connection error can be either kind
         assert!(err_kind == ErrorKind::ConnectionAborted || err_kind == ErrorKind::ConnectionReset);
+    }
+
+    #[test]
+    fn returns_redirect_on_dir_access_without_slash() {
+        let current_dir = std::env::current_dir().unwrap();
+        let conf = ServerConfiguration::new(current_dir, Some(vec!["index.html".to_string()]), None, None, true);
+        let address = start_server(Some(conf));
+
+        // we should receive a redirect from "/test-data/axure" => "/test-data/axure/"
+        let response = call_server_and_read_response(address, "GET /test-data/axure HTTP/1.1\n\n");
+
+        let mut lines = response.lines();
+
+        let response_start_line = lines.next().expect("No lines");
+        let content_type_header = lines
+            .find(|l| l.starts_with("Location")).expect("Location header not found");
+
+        assert!(response_start_line.starts_with("HTTP/1.1 307"));
+        assert!(content_type_header.contains("/test-data/axure/"));
     }
 
     //#[test]
