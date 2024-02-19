@@ -132,7 +132,7 @@ fn main() {
 
     let wwwroot = get_current_dir();
     let protocol = match tls_acceptor { Some(_) => "https", None => "http" };
-    let conf = ServerConfiguration::new(wwwroot.clone(), args.default_documents, args.mime_types, None, args.index_browsing);
+    let conf = ServerConfiguration::new(wwwroot.clone(), args.default_documents, args.mime_types, None, args.index_browsing, None);
 
     let mut server = Server::new(conf, addr, tls_acceptor);
 

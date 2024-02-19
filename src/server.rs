@@ -25,6 +25,7 @@ pub struct ServerConfiguration {
     /// 2. The size of any message body
     buffer_size: usize,
     directory_browsing: bool,
+    connection_timeout_ms: u64,
 }
 
 impl ServerConfiguration {
@@ -45,13 +46,14 @@ pub struct Server {
 }
 
 impl ServerConfiguration {
-    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>, buffer_size: Option<usize>, directory_browsing: bool) -> ServerConfiguration {
+    pub fn new(www_root: PathBuf, default_documents: Option<Vec<String>>, mime_types: Option<Vec<(String, String)>>, buffer_size: Option<usize>, directory_browsing: bool, connection_timeout_ms: Option<u64>) -> ServerConfiguration {
         ServerConfiguration {
             www_root,
             default_documents,
             mime_types,
             buffer_size: buffer_size.unwrap_or(10000),
-            directory_browsing
+            directory_browsing,
+            connection_timeout_ms: connection_timeout_ms.unwrap_or(2000)
         }
     }
 }
@@ -501,7 +503,7 @@ impl Server {
     }
 
     pub fn bind(&mut self) -> Result<SocketAddr, std::io::Error> {
-        let socket = bind_server_socket(self.address, 2000)?;
+        let socket = bind_server_socket(self.address, self.conf.connection_timeout_ms)?;
         let local_addr = socket
             .local_addr().expect("socket was not bound")
             .as_socket().expect("socket address was unexpected type");
@@ -544,7 +546,7 @@ mod tests {
         let current_dir = std::env::current_dir().unwrap();
         let conf = match conf {
             Some(c) => c,
-            None => ServerConfiguration::new(current_dir, None, None, None, false)
+            None => ServerConfiguration::new(current_dir, None, None, None, false, None)
         };
         let address = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         let mut server = Server::new(conf, address, None);
@@ -584,7 +586,7 @@ mod tests {
     #[test_case("md", "text/markdown", "/readme.md"; "Markdown file (not built-in)")]
     #[test_case("xml", "hej/mor", "/test-data/xml.xml"; "Xml file (overrides built-in)")]
     fn returns_expected_custom_mimetypes(file_type: &str, mime_type: &str, path: &str) {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None, false);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, Some(vec![(file_type.to_owned(), mime_type.to_owned())]), None, false, None);
         let address = start_server(Some(conf));
 
         let req = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -707,7 +709,7 @@ mod tests {
         use std::env::current_dir;
 
         let default_docs = Some(vec![default_doc.to_owned()]);
-        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None, None, false);
+        let conf = ServerConfiguration::new(current_dir().expect("Failed to read current dir"), default_docs, None, None, false, None);
         let address = start_server(Some(conf));
 
         let request = format!("GET {path} HTTP/1.1\r\n\r\n");
@@ -727,7 +729,7 @@ mod tests {
 
     #[test]
     fn bad_request_status_code_if_incoming_msg_is_too_large_for_internal_stream_buffer() {
-        let conf = ServerConfiguration::new(PathBuf::new(), None, None, Some(100), false);
+        let conf = ServerConfiguration::new(PathBuf::new(), None, None, Some(100), false, None);
         let address = start_server(Some(conf));
 
         let request = format!("GET / HTTP/1.1\r\nSome-Header: {}\r\n\r\n", "0123456789".repeat(100));
@@ -743,7 +745,7 @@ mod tests {
         use chunked_transfer::Decoder;
         
         let current_dir = std::env::current_dir().unwrap();
-        let conf = ServerConfiguration::new(current_dir, None, None, None, true);
+        let conf = ServerConfiguration::new(current_dir, None, None, None, true, None);
         let address = start_server(Some(conf));
 
         let client_handle = thread::spawn(move || {
@@ -789,7 +791,7 @@ mod tests {
             // while im sure it's somewhat undefined and dependent on timing,
             // writing twice to the socket seems the most reliable way to see
             // a closed connection, on the second write.
-            stream.write("GET ".as_bytes()); // ignore this part
+            stream.write("GET ".as_bytes()).unwrap_or(0); // ignore this part
             // and this time we should get an actual error
             let write_result = stream.write("/test_data/xml.xml HTTP/1.1\r\n\r\n".as_bytes());
             (response_xml, response_txt, write_result)
@@ -808,7 +810,7 @@ mod tests {
     #[test]
     fn returns_redirect_on_dir_access_without_slash() {
         let current_dir = std::env::current_dir().unwrap();
-        let conf = ServerConfiguration::new(current_dir, Some(vec!["index.html".to_string()]), None, None, true);
+        let conf = ServerConfiguration::new(current_dir, Some(vec!["index.html".to_string()]), None, None, true, None);
         let address = start_server(Some(conf));
 
         // we should receive a redirect from "/test-data/axure" => "/test-data/axure/"
@@ -824,9 +826,11 @@ mod tests {
         assert!(content_type_header.contains("/test-data/axure/"));
     }
 
-    //#[test]
+    #[test]
     fn does_not_return_anything_on_connection_timeout() {
-        let address = start_server(None);
+        let current_dir = std::env::current_dir().unwrap();
+        let conf = ServerConfiguration::new(current_dir, None, None, None, false, Some(200));
+        let address = start_server(Some(conf));
 
         let client_handle = thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
@@ -837,6 +841,6 @@ mod tests {
 
         let response = client_handle.join().unwrap();
 
-        println!("RESPONSE: {:?}", response);
+        assert_eq!(response, "");
     }
 }
