@@ -28,16 +28,6 @@ pub struct ServerConfiguration {
     connection_timeout_ms: u64,
 }
 
-impl ServerConfiguration {
-    fn has_default_documents(&self) -> bool {
-        if let Some(x) = &self.default_documents {
-            x.len() > 0
-        } else {
-            false
-        }
-    }
-}
-
 pub struct Server {
     conf: ServerConfiguration,
     address: SocketAddr,
