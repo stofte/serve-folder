@@ -10,28 +10,32 @@ Tested on Windows only for now.
 
 ## Usage
 
-    Simple CLI server utility for hosting directories over HTTP
+        Simple CLI server utility for hosting directories over HTTP
 
-    Usage: servefolder.exe [OPTIONS] [WWWROOT]
+        Usage: servefolder.exe [OPTIONS] [WWWROOT]
 
-    Arguments:
-      [WWWROOT]  Web root directory. Defaults to the current directory if not set
+        Arguments:
+        [WWWROOT]  Web root directory. Defaults to the current directory if not set
 
-    Options:
-      -p, --port <PORT>
-              Server port [default: 8080]
-      -b, --bind <BIND>
-              Network interface to bind [default: 0.0.0.0]
-      -f, --certificate-filename <CERTIFICATE_FILENAME>
-              Filepath for TLS certificate
-      -w, --certificate-password <CERTIFICATE_PASSWORD>
-              Optional password for the above TLS certificate
-      -t, --certificate-thumbprint <CERTIFICATE_THUMBPRINT>
-              Locally installed TLS certificate thumprint to use
-      -d, --default-documents <DEFAULT_DOCUMENTS>
-              Default documents list. Specify option multiple times for each value in order of priority [default: index.html]
-      -h, --help
-              Print help
+        Options:
+        -p, --port <PORT>
+                Server port [default: 8080]
+        -b, --bind <BIND>
+                Network interface to bind [default: 0.0.0.0]
+        -f, --certificate-filepath <CERTIFICATE_FILEPATH>
+                Filepath for TLS certificate
+        -w, --certificate-password <CERTIFICATE_PASSWORD>
+                Optional password for the TLS certificate file
+        -t, --certificate-thumbprint <CERTIFICATE_THUMBPRINT>
+                Locally installed TLS certificate thumprint to use
+        -d, --default-documents <DEFAULT_DOCUMENTS>
+                Default documents list. Specify option multiple times for each value in order of priority [default: index.html]
+        -m, --mime-types <MIME_TYPES>
+                Configure/override mime-types for file extensions
+        -i, --index-browsing
+                Enables directory browsing
+        -h, --help
+                Print help
 
 ## Examples:
 
